@@ -19,7 +19,9 @@
 | `relayDir` | string | 中继运行数据目录相对路径（应加入 `.gitignore`），默认 `".agents/relay"` |
 | `codexBin` | string | `windows` 模式下可显式指定 `codex.exe` 路径；留空时自动探测 PATH 与 VS Code 扩展内置 `codex.exe` |
 | `gitBranch` | string | 当前任务特性分支（建议 `feat/<batchId>`） |
-| `threads` | object | 显式固定的各角色 UUID：`{ "hub": "...", "ab": "...", "c": "..." }`；**可留空 `""` 交由 `threadMatchers` 动态解析** |
+| `automationMode` | `"full-auto"\|"semi-auto"` | 值守自动化级别：`full-auto`（全自动中继、自动拉起 `R0` 并可按授权收官）；`semi-auto`（半自动巡检并等待人工确认关键节点） |
+| `worktrees` | object | 多 Worktree 监控配置：`{ "autoDiscover": true, "roleWorktrees": { "a": "../wt-a", "b": "../wt-b" } }`；`send`/`spawn` 会自动在对应角色 worktree 中执行，并纳入遥测 `DIRTY` 监控（同时兼容顶层 `roleWorktrees`） |
+| `threads` | object | 显式固定的各角色 UUID：`{ "hub": "...", "ab": "...", "c": "..." }`（亦支持自定义角色名如 `a`、`b`）；**可留空 `""` 交由 `threadMatchers` 动态解析** |
 | `threadMatchers` | object | 按 `~/.codex/session_index.jsonl` 会话标题动态匹配关键字（大小写不敏感子串），如 `{ "hub": "Demo-Codex-Hub", "ab": "Demo-AB", "c": "Demo-C" }`；当对应 `threads[role]` 为空时自动匹配最新活跃会话 |
 | `thresholds` | object | 防停与熔断阈值：`pollIntervalSec`（`180`）、`idleThresholdSec`（`180`）、`maxNoProgressPushes`（`3`）、`maxFixRounds`（`2`） |
 | `webhook` | object | 告警钩子：`enabled`（bool）、`type`（`"feishu"\|"wecom"\|"dingtalk"\|"generic"`）、`url`（不推荐明文写进已跟踪文件）、`envUrl`（环境变量名，优先读取，默认 `"RELAY_WEBHOOK_URL"`） |
@@ -89,18 +91,25 @@ node relay.mjs spawn [--config <relay.json> | --project <dir>] --role <hub|ab|c>
 ```
 - **行为**：无需手动在界面新建窗口，直接通过 `codex exec -C <projectPath> -s <sandbox> -a never --json -` 发起全新会话（默认 `hub` 只读、`ab/c` 可写），解析启动事件中的 `thread_id` 自动写入 `relay.json` 并登记换班日志。使用 `--dry-run` 可先检查命令参数而不启动实例。
 
-### 5. `status` — 全量态势采集与熔断判定
+### 5. `status` — 全量态势采集、Worktree 遥测与熔断判定
 ```powershell
-node relay.mjs status [--config <relay.json> | --project <dir>] [--json]
+node relay.mjs status [--config <relay.json> | --project <dir>] [--compact] [--json]
 ```
 - **输出**：
-  - `hub` / `ab` / `c` 解析方式（`pinned` / `matcher` / `UNBOUND`）、会话标题、当前状态、`idle_seconds`、`last_write`；
-  - `DISPATCH_BOARD.md` 最新状态表行与最近 5 条日志、`AB-codex.md` 最近标题；
+  - `--compact`：仅输出 1 行 **Ops-Cockpit 遥测条**（`● RELAY` / `◐ AUDIT` / `▲ IDLE` / `■ BREAKER` + 流水线面包屑 + 活跃秒数 + 主仓与各 Worktree `Δ`）；
+  - `hub` / `ab` / `c` 及自定义角色（如 `a` / `b`）的解析方式（`pinned` / `matcher` / `UNBOUND`）、会话标题、当前状态、`idle_seconds`、`last_write`；
+  - `DISPATCH_BOARD.md` 最新状态表行与最近 5 条日志、`AB-codex.md` 最近标题、解析后的流水线阶段状态 `pipeline`；
   - 过滤掉 `processedHandoffs` 后的新增「发送到：Antigravity / 待转交」跨端列表；
-  - Git `branch`、`HEAD`（完整与短 SHA）与 `dirtyCount`；
-  - 熔断标记：`noProgressBreaker`（哪些角色达到 `maxNoProgressPushes`）、`fixCapBreaker`（哪些阶段达到 `maxFixRounds`）、`activeCrossAgent`。
+  - Git `branch`、`HEAD`（完整与短 SHA）、`dirtyCount` 及 `worktrees[]`（所有显式配置或 `git worktree list` 自动发现的次级 Worktree 状态）；
+  - 熔断标记：`noProgressBreaker`（哪些角色达到 `maxNoProgressPushes`）、`fixCapBreaker`（哪些阶段达到 `maxFixRounds`）、`activeCrossAgent`、`automationMode`。
 
-### 6. `send` — 带防重与无进展保护的安全队列投递
+### 6. `render` — 生成标准化 Ops-Cockpit 输出块
+```powershell
+node relay.mjs render <heartbeat|nudge|milestone|breaker|complete> [--config <path> | --project <dir>] [options]
+```
+- 直接生成工程驾驶舱样式的 Markdown 块（单行心跳、停滞唤醒 `▲ NUDGE`、阶段里程碑 4 列状态表、熔断 `CAUTION` 与收官 `TIP` 汇总表），消除多设备输出格式漂移。
+
+### 7. `send` — 带防重与无进展保护的安全队列投递
 ```powershell
 node relay.mjs send [--config <relay.json> | --project <dir>] --role <hub|ab|c> --file <msg-file> --reason <text> [--force]
 ```
@@ -110,17 +119,17 @@ node relay.mjs send [--config <relay.json> | --project <dir>] --role <hub|ab|c> 
   3. CRLF 自动规范化为 LF 后通过 `codex queue --thread <uuid> --message <text> --resume -C <projectPath>` 投递（WSL 下通过 `stdin` 传参，零引号转义问题）；
   4. 投递成功后自动将报文存档至 `relayDir/messages/`、追加 `relay.log` 并更新 `relay-state.json`。
 
-### 7. `state` — 维护跨端审核周期与换班记录
+### 8. `state` — 维护跨端审核周期与换班记录
 ```powershell
 node relay.mjs state [--config <relay.json> | --project <dir>] show
 node relay.mjs state [--config <relay.json> | --project <dir>] start-review --task <id> --role <R0|Hub> --subagent <uuid> --output <path> [--handoff <id>]
 node relay.mjs state [--config <relay.json> | --project <dir>] finish-review --task <id> --verdict <通过|要求整改|阻塞> --report <path> --sha256 <hash>
 node relay.mjs state [--config <relay.json> | --project <dir>] mark-processed --handoff <id>
-node relay.mjs state [--config <relay.json> | --project <dir>] rotate-thread --role <hub|ab|c> --thread <new-uuid> [--reason <text>]
-node relay.mjs state [--config <relay.json> | --project <dir>] reset-pushes --role <hub|ab|c>
+node relay.mjs state [--config <relay.json> | --project <dir>] rotate-thread --role <role> --thread <new-uuid> [--reason <text>]
+node relay.mjs state [--config <relay.json> | --project <dir>] reset-pushes --role <role>
 ```
 
-### 8. `notify` — 发送 Webhook 告警 / 完工通知
+### 9. `notify` — 发送 Webhook 告警 / 完工通知
 ```powershell
 node relay.mjs notify [--config <relay.json> | --project <dir>] --event <circuit_breaker|blocker|quota|complete|info> --title <text> --message <text> [--dry-run]
 ```

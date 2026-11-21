@@ -10,6 +10,11 @@
   "relayDir": ".agents/relay",
   "codexBin": "",
   "gitBranch": "{{GIT_BRANCH}}",
+  "automationMode": "full-auto",
+  "worktrees": {
+    "autoDiscover": true,
+    "roleWorktrees": {}
+  },
   "threads": {
     "hub": "",
     "ab": "",

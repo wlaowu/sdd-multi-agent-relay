@@ -20,6 +20,57 @@ const RESOURCES_DIR = path.resolve(__dirname, '../resources');
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const UUID_EXACT_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const DEFAULT_ROLES = ['hub', 'ab', 'c'];
+const ROLE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,23}$/;
+
+function normalizeRoleName(raw, flagName = '--role') {
+  const role = String(raw || '').trim().toLowerCase();
+  if (!ROLE_NAME_RE.test(role)) {
+    throw new Error(`Invalid ${flagName} "${raw || ''}". Expected lowercase identifier (e.g. hub, ab, c, a, b).`);
+  }
+  return role;
+}
+
+function getConfiguredRoleNames(config) {
+  const set = new Set(DEFAULT_ROLES);
+  for (const source of [
+    config?.threads,
+    config?.threadMatchers,
+    config?.worktrees?.roleWorktrees,
+    config?.roleWorktrees,
+  ]) {
+    if (!source || typeof source !== 'object') continue;
+    for (const k of Object.keys(source)) {
+      const norm = String(k || '').trim().toLowerCase();
+      if (ROLE_NAME_RE.test(norm)) set.add(norm);
+    }
+  }
+  return Array.from(set);
+}
+
+function resolveRoleWorktreeRaw(config, role) {
+  return (
+    config?.worktrees?.roleWorktrees?.[role] ||
+    config?.roleWorktrees?.[role] ||
+    ''
+  );
+}
+
+function resolveRoleCwdForCodex(config, role, winProjectRoot) {
+  const raw = resolveRoleWorktreeRaw(config, role);
+  if (!raw) return config.projectPath;
+  if (config.runtime === 'wsl') {
+    return path.posix.isAbsolute(raw) ? raw : path.posix.resolve(config.projectPath || '/', raw);
+  }
+  return path.resolve(winProjectRoot, raw);
+}
+
+function resolveRoleWinCwd(config, role, winProjectRoot) {
+  const raw = resolveRoleWorktreeRaw(config, role);
+  if (!raw) return winProjectRoot;
+  if (config.runtime === 'wsl') return winProjectRoot;
+  return path.resolve(winProjectRoot, raw);
+}
 
 function printHelp() {
   console.log(`sdd-multi-agent-relay CLI (relay.mjs)
@@ -35,26 +86,35 @@ Commands:
   init      Initialize .agents/development & .agents/relay scaffolding in a project
             Options: --project <path> [--runtime <wsl|windows|posix>] [--distro <name>]
                      [--name <projectName>] [--batch <batchId>] [--tier <L1|L2|L3>]
-                     [--branch <gitBranch>] [--no-gitignore] [--force]
+                     [--branch <gitBranch>] [--automation-mode <full-auto|semi-auto>]
+                     [--no-gitignore] [--force]
 
   threads   List recent Codex rollout sessions (metadata + title index only)
             Options: [--runtime <wsl|windows|posix>] [--distro <name>] [--filter <keyword>]
                      [--limit <n>] [--json]
 
   bind      Dynamically bind a role to a session UUID, title keyword, or auto-match mode
-            Options: [--config <path> | --project <dir>] --role <hub|ab|c>
+            Options: [--config <path> | --project <dir>] --role <role>
                      (--thread <uuid> | --match <keyword> | --auto)
 
   spawn     Start a fresh Codex session cleanly and record its new thread UUID
-            Options: [--config <path> | --project <dir>] --role <hub|ab|c>
+            Options: [--config <path> | --project <dir>] --role <role>
                      [--prompt-file <file> | --prompt <text>]
                      [--sandbox <read-only|workspace-write>] [--dry-run]
 
-  status    Inspect Codex threads, board, task cards, git state, and circuit breakers
-            Options: [--config <path> | --project <dir>] [--json]
+  status    Inspect Codex threads, worktrees, board, task cards, git state, and breakers
+            Options: [--config <path> | --project <dir>] [--compact] [--json]
+
+  render    Render standardized Ops-Cockpit status blocks for Antigravity outputs
+            Subcommands: heartbeat | nudge | milestone | breaker | complete
+            Options: [--config <path> | --project <dir>] [--task <id>] [--role <role>]
+                     [--idle <sec>] [--file <name>] [--exit <code>] [--verdict <v>]
+                     [--gate <text>] [--sha <sha>] [--parent <sha>] [--report <path>]
+                     [--sha256 <hash>] [--counts <0/0/0/0/0>] [--next <text>]
+                     [--reason <text>] [--options <text>] [--stages <spec>] [--countdown <sec>]
 
   send      Queue a message to a bound/matched Codex thread with progress guards
-            Options: [--config <path> | --project <dir>] --role <hub|ab|c>
+            Options: [--config <path> | --project <dir>] --role <role>
                      --file <msg-file> --reason <text> [--force]
 
   state     Manage .agents/relay/relay-state.json (review lifecycle, rotations, resets)
@@ -64,8 +124,8 @@ Commands:
               start-review    --task <id> --role <R0|Hub> --subagent <uuid> --output <path> [--handoff <id>]
               finish-review   --task <id> --verdict <通过|要求整改|阻塞> --report <path> --sha256 <hash>
               mark-processed  --handoff <id>
-              rotate-thread   --role <hub|ab|c> --thread <uuid> [--reason <text>]
-              reset-pushes    --role <hub|ab|c>
+              rotate-thread   --role <role> --thread <uuid> [--reason <text>]
+              reset-pushes    --role <role>
 
   notify    Send webhook notification (Feishu / WeCom / DingTalk / Generic JSON)
             Options: [--config <path> | --project <dir>]
@@ -133,23 +193,127 @@ function runWslBash(distro, script, args = [], inputText = undefined, timeoutMs 
   return res;
 }
 
-function runGit(config, winProjectRoot, gitArgs) {
+function runGitAt(config, targetPath, gitArgs) {
   if (config.runtime === 'wsl') {
-    const res = runWslBash(
+    return runWslBash(
       config.wslDistro,
-      'cwd="$1"; shift; git -C "$cwd" "$@"',
-      [config.projectPath, ...gitArgs],
+      'cwd="$1"; shift; [ -d "$cwd" ] || exit 66; git -C "$cwd" "$@"',
+      [targetPath, ...gitArgs],
       undefined,
       15000,
     );
-    return res;
   }
-  return spawnSync('git', ['-C', winProjectRoot, ...gitArgs], {
+  if (!targetPath || !fs.existsSync(targetPath)) {
+    return { status: 66, stdout: '', stderr: `Directory not found: ${targetPath}` };
+  }
+  return spawnSync('git', ['-C', targetPath, ...gitArgs], {
     encoding: 'utf8',
     timeout: 15000,
     windowsHide: true,
     shell: false,
   });
+}
+
+function runGit(config, winProjectRoot, gitArgs) {
+  const basePath = config.runtime === 'wsl' ? config.projectPath : winProjectRoot;
+  return runGitAt(config, basePath, gitArgs);
+}
+
+function normalizeComparablePath(p, runtime) {
+  if (!p) return '';
+  if (runtime === 'wsl') return path.posix.normalize(p);
+  const norm = path.normalize(path.resolve(p));
+  return process.platform === 'win32' ? norm.toLowerCase() : norm;
+}
+
+function parseGitWorktreePorcelain(stdout) {
+  const items = [];
+  let cur = null;
+  for (const line of String(stdout || '').split(/\r?\n/)) {
+    if (!line.trim()) {
+      if (cur && cur.path) items.push(cur);
+      cur = null;
+      continue;
+    }
+    if (line.startsWith('worktree ')) {
+      if (cur && cur.path) items.push(cur);
+      cur = { path: line.slice('worktree '.length).trim(), head: '', branch: '' };
+    } else if (cur && line.startsWith('HEAD ')) {
+      cur.head = line.slice('HEAD '.length).trim();
+    } else if (cur && line.startsWith('branch ')) {
+      cur.branch = line.slice('branch '.length).trim().replace(/^refs\/heads\//, '');
+    }
+  }
+  if (cur && cur.path) items.push(cur);
+  return items;
+}
+
+function inspectGitTarget(config, resolvedPath, role = null, source = 'configured') {
+  const porcelain = runGitAt(config, resolvedPath, ['status', '--porcelain']);
+  if (porcelain.status === 66) {
+    return {
+      id: role || path.basename(resolvedPath),
+      role,
+      path: resolvedPath,
+      source,
+      exists: false,
+      branch: null,
+      headShort: null,
+      dirtyCount: null,
+    };
+  }
+  const headRes = runGitAt(config, resolvedPath, ['rev-parse', '--short=8', 'HEAD']);
+  const branchRes = runGitAt(config, resolvedPath, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  return {
+    id: role || path.basename(resolvedPath),
+    role,
+    path: resolvedPath,
+    source,
+    exists: true,
+    branch: branchRes.status === 0 ? branchRes.stdout.trim() : null,
+    headShort: headRes.status === 0 ? headRes.stdout.trim() : null,
+    dirtyCount: porcelain.status === 0
+      ? porcelain.stdout.split(/\r?\n/).filter((l) => l.trim().length > 0).length
+      : null,
+  };
+}
+
+function collectWorktrees(config, winProjectRoot) {
+  const runtime = config.runtime || 'windows';
+  const primaryResolved = runtime === 'wsl'
+    ? path.posix.resolve(config.projectPath || '/')
+    : path.resolve(winProjectRoot);
+  const seen = new Set([normalizeComparablePath(primaryResolved, runtime)]);
+  const entries = [];
+
+  const configuredMap = {
+    ...(config.roleWorktrees || {}),
+    ...(config.worktrees?.roleWorktrees || {}),
+  };
+  for (const [rawRole, rawPath] of Object.entries(configuredMap)) {
+    if (!rawPath || typeof rawPath !== 'string' || !rawPath.trim()) continue;
+    const role = rawRole.trim().toLowerCase();
+    const resolved = runtime === 'wsl'
+      ? (path.posix.isAbsolute(rawPath) ? rawPath : path.posix.resolve(primaryResolved, rawPath))
+      : path.resolve(winProjectRoot, rawPath);
+    const key = normalizeComparablePath(resolved, runtime);
+    seen.add(key);
+    entries.push(inspectGitTarget(config, resolved, role, 'roleWorktrees'));
+  }
+
+  if (config.worktrees?.autoDiscover !== false) {
+    const wtRes = runGit(config, winProjectRoot, ['worktree', 'list', '--porcelain']);
+    if (wtRes.status === 0) {
+      for (const block of parseGitWorktreePorcelain(wtRes.stdout)) {
+        const key = normalizeComparablePath(block.path, runtime);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        const label = runtime === 'wsl' ? path.posix.basename(block.path) : path.basename(block.path);
+        entries.push(inspectGitTarget(config, block.path, label, 'discovered'));
+      }
+    }
+  }
+  return entries;
 }
 
 function normalizeRuntime(raw) {
@@ -580,6 +744,10 @@ function cmdInit(flags) {
   relayConfig.wslDistro = distro;
   relayConfig.projectPath = projectPathForCodex;
   relayConfig.gitBranch = gitBranch;
+  if (flags['automation-mode']) {
+    relayConfig.automationMode = String(flags['automation-mode']).trim();
+  }
+  relayConfig.worktrees = relayConfig.worktrees || { autoDiscover: true, roleWorktrees: {} };
   relayConfig.threadMatchers = {
     hub: `${projectName}-Codex-Hub`,
     ab: `${projectName}-AB`,
@@ -592,6 +760,7 @@ function cmdInit(flags) {
     runtime: 'windows | wsl | posix',
     wslDistro: '',
     projectPath: '<LOCAL_REPO_PATH>',
+    worktrees: { autoDiscover: true, roleWorktrees: {} },
     threads: { hub: '', ab: '', c: '' },
     webhook: { ...(relayConfig.webhook || {}), url: '' },
   };
@@ -667,8 +836,9 @@ function resolveRoleThreads(config, state, idleThreshold, maxNoProgress) {
   const allThreads = listAllRuntimeThreads(config.runtime || 'windows', config.wslDistro || '');
   const byId = new Map(allThreads.map((t) => [t.uuid, t]));
   const roles = {};
+  const roleNames = getConfiguredRoleNames(config);
 
-  for (const r of ['hub', 'ab', 'c']) {
+  for (const r of roleNames) {
     const pinned = (config.threads?.[r] || '').trim().toLowerCase();
     const matcher = (config.threadMatchers?.[r] || '').trim();
     const roleState = state.roles[r] || {};
@@ -721,6 +891,159 @@ function resolveRoleThreads(config, state, idleThreshold, maxNoProgress) {
     }
   }
   return roles;
+}
+
+function classifyBoardRowStatus(cells, rawId, stageKey, state, activeCrossAgent) {
+  if (state?.passedStages?.[stageKey]) return 'done';
+  const activeStage = activeCrossAgent?.taskId ? normalizeStageKey(activeCrossAgent.taskId) : null;
+  if (activeStage && activeStage === stageKey) return 'active';
+
+  const statusText = cells.slice(1).join(' | ');
+  if (/(?:通过|已闭环|已完成|\bPASS\b|\bDONE\b|\bCLOSED\b)/i.test(statusText) &&
+      !/(?:要求整改|不满足|未送审|待.*(?:通过|确认))/.test(statusText)) {
+    return 'done';
+  }
+  if (/(?:熔断|阻塞|要求整改|\bBLOCKED\b|\bFAIL\b)/i.test(statusText) && !/解阻/.test(statusText)) {
+    return 'blocked';
+  }
+  if (/(?:实施中|已接棒|返修中|进行中|审核中|复审中|已内部送达|\bIN_PROGRESS\b|\bWORKING\b)/i.test(statusText)) {
+    return 'active';
+  }
+  return 'pending';
+}
+
+function parsePipelineSummary(boardTaskRows, state, activeCrossAgent) {
+  const stageMap = new Map();
+  let seq = 0;
+
+  for (const row of boardTaskRows || []) {
+    const rawCells = row.split('|').map((c) => c.trim());
+    if (rawCells[0] === '') rawCells.shift();
+    if (rawCells.length > 0 && rawCells[rawCells.length - 1] === '') rawCells.pop();
+    if (rawCells.length < 2) continue;
+
+    const rawId = rawCells[0].replace(/`/g, '').trim();
+    if (!rawId || /^<.*>$/.test(rawId) || /^---+$/.test(rawId)) continue;
+
+    const stageKey = normalizeStageKey(rawId);
+    const isReview = /(?:[-_]REVIEW|[-_]R0)$/i.test(rawId);
+    const fixMatch = rawId.match(/[-_]FIX(\d+)/i);
+    const round = fixMatch ? parseInt(fixMatch[1], 10) : 0;
+    const rank = round * 2 + (isReview ? 1 : 0);
+    const status = classifyBoardRowStatus(rawCells, rawId, stageKey, state, activeCrossAgent);
+
+    const existing = stageMap.get(stageKey);
+    if (!existing) {
+      stageMap.set(stageKey, { stage: stageKey, status, rank, order: seq++ });
+    } else if (status === 'done' || rank >= existing.rank) {
+      if (existing.status !== 'done' || status === 'done' || !isReview) {
+        existing.status = status;
+        existing.rank = Math.max(existing.rank, rank);
+      }
+    }
+  }
+
+  let stages = Array.from(stageMap.values()).sort((a, b) => a.order - b.order);
+  if (stages.length > 6) {
+    const firstNonDone = stages.findIndex((s) => s.status !== 'done');
+    const startIdx = firstNonDone >= 0 ? Math.max(0, firstNonDone - 2) : Math.max(0, stages.length - 6);
+    stages = stages.slice(startIdx, startIdx + 6);
+  }
+
+  const plainParts = stages.map((s) => {
+    if (s.status === 'done') return `${s.stage} ✓`;
+    if (s.status === 'active') return `▸ ${s.stage}`;
+    if (s.status === 'blocked') return `! ${s.stage}`;
+    return `${s.stage} ◌`;
+  });
+  const mdParts = stages.map((s) => {
+    if (s.status === 'done') return `\`${s.stage} ✓\``;
+    if (s.status === 'active') return `**\`▸ ${s.stage}\`**`;
+    if (s.status === 'blocked') return `**\`! ${s.stage}\`**`;
+    return `\`${s.stage} ◌\``;
+  });
+
+  return {
+    stages: stages.map(({ stage, status }) => ({ stage, status })),
+    breadcrumb: plainParts.join(' · ') || '-',
+    markdownBreadcrumb: mdParts.join(' · ') || '',
+  };
+}
+
+function formatRoleIdleShort(info) {
+  if (!info || info.idleSeconds === null || info.idleSeconds === undefined) return '';
+  return `${info.idleSeconds}s`;
+}
+
+function buildTelemetryLine(st) {
+  const roleEntries = Object.entries(st.roles || {});
+  const workerEntries = roleEntries.filter(([name, info]) =>
+    name !== 'hub' && (info.status === 'WORKING' || info.status === 'STOPPED'));
+  const activeWorkers = workerEntries.filter(([, info]) => info.status === 'WORKING');
+  const allLive = roleEntries.filter(([, info]) => info.status === 'WORKING' || info.status === 'STOPPED');
+  const hasBreaker = Boolean(st.breakers?.fixCapBreaker || (st.breakers?.noProgressRoles?.length || 0) > 0);
+  const hasAudit = Boolean(st.activeCrossAgent);
+  const hasHandoff = (st.pendingCrossAgent?.length || 0) > 0;
+
+  let badge = '`◌ STANDBY`';
+  if (hasBreaker) badge = '`■ BREAKER`';
+  else if (hasAudit) badge = '`◐ AUDIT`';
+  else if (hasHandoff) badge = '`◆ HANDOFF`';
+  else if (allLive.some(([, info]) => info.status === 'WORKING')) badge = '`● RELAY`';
+  else if (allLive.length > 0) badge = '`▲ IDLE`';
+
+  // Pick latest observed write timestamp HH:MM:SS if present, else checkedAt
+  const latestLastWrite = allLive
+    .map(([, info]) => info.lastWrite)
+    .filter(Boolean)
+    .sort()
+    .slice(-1)[0];
+  const ts = latestLastWrite
+    ? String(latestLastWrite).slice(11, 19)
+    : String(st.checkedAt || '').slice(11, 19);
+
+  const batchChunk = `**\`${st.batchId}\`**${st.pipeline?.markdownBreadcrumb ? ` ${st.pipeline.markdownBreadcrumb}` : ''}`;
+
+  const telemetryParts = [];
+  if (hasAudit) {
+    const subShort = String(st.activeCrossAgent.subagentId || '').slice(0, 8);
+    telemetryParts.push(`\`R0#${subShort || 'active'}\` 隔离审计 \`${st.activeCrossAgent.taskId}\``);
+    telemetryParts.push(`\`HEAD ${st.git?.headShort ?? '-'}\``);
+    telemetryParts.push(`\`Δ ${st.git?.dirtyCount ?? '-'}\``);
+  } else if (Array.isArray(st.worktrees) && st.worktrees.length > 0) {
+    const wtSummary = st.worktrees.map((wt) => {
+      const rInfo = wt.role ? st.roles?.[wt.role] : null;
+      const idleTxt = rInfo && rInfo.idleSeconds !== null ? ` ${rInfo.idleSeconds}s` : '';
+      const dTxt = wt.exists ? `Δ${wt.dirtyCount ?? '-'}` : 'missing';
+      return `\`${wt.id.toUpperCase()}\`${idleTxt} (${dTxt})`;
+    });
+    if (wtSummary.length === 1 && st.git?.headShort) {
+      telemetryParts.push(`\`HEAD ${st.git.headShort}\``);
+      telemetryParts.push(`\`Δ ${st.git.dirtyCount ?? '-'}\``);
+    }
+    telemetryParts.push(...wtSummary);
+  } else {
+    const targetList = workerEntries.length > 0 ? workerEntries : allLive.slice(0, 2);
+    if (targetList.length > 0) {
+      const roleSummary = targetList
+        .map(([name, info]) => `\`${name.toUpperCase()}\` ${info.status === 'WORKING' ? '活跃' : '停滞'} \`${formatRoleIdleShort(info)}\``)
+        .join(' · ');
+      telemetryParts.push(roleSummary);
+    } else {
+      telemetryParts.push('`UNBOUND`');
+    }
+    telemetryParts.push(`\`HEAD ${st.git?.headShort ?? '-'}\``);
+    telemetryParts.push(`\`Δ ${st.git?.dirtyCount ?? '-'}\``);
+  }
+
+  let tail = '*Hold*';
+  if (hasBreaker) tail = '*HALT / Decision Needed*';
+  else if (hasAudit) tail = '*Wait*';
+  else if (hasHandoff) tail = '*Dispatch R0*';
+  else if (activeWorkers.length > 0 || allLive.some(([, i]) => i.status === 'WORKING')) tail = '*Hold*';
+  else if (allLive.length > 0) tail = '*Check Rules a–d*';
+
+  return `> ${badge} \`${ts || '--:--:--'}\` \`│\` ${batchChunk} \`│\` ${telemetryParts.join(' `·` ')} \`│\` ${tail}`;
 }
 
 function collectStatus(ctx) {
@@ -780,7 +1103,7 @@ function collectStatus(ctx) {
     }
   }
 
-  // Git metadata
+  // Git metadata & secondary worktrees
   const headRes = runGit(config, winProjectRoot, ['rev-parse', 'HEAD']);
   const branchRes = runGit(config, winProjectRoot, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const porcelainRes = runGit(config, winProjectRoot, ['status', '--porcelain']);
@@ -789,11 +1112,19 @@ function collectStatus(ctx) {
   const dirtyCount = porcelainRes.status === 0
     ? porcelainRes.stdout.split(/\r?\n/).filter((l) => l.trim().length > 0).length
     : null;
+  const worktrees = collectWorktrees(config, winProjectRoot);
 
-  const snapshot = { headFull, dirtyCount, boardMtimeSec, abCardMtimeSec };
+  const snapshot = {
+    headFull,
+    dirtyCount,
+    worktreesDirty: worktrees.map((w) => ({ id: w.id, headShort: w.headShort, dirtyCount: w.dirtyCount })),
+    boardMtimeSec,
+    abCardMtimeSec,
+  };
   const prev = state.lastObservedSnapshot || {};
   const changedSinceLastSnapshot =
     snapshot.headFull !== prev.headFull ||
+    JSON.stringify(snapshot.worktreesDirty) !== JSON.stringify(prev.worktreesDirty || []) ||
     snapshot.boardMtimeSec !== prev.boardMtimeSec ||
     snapshot.abCardMtimeSec !== prev.abCardMtimeSec;
 
@@ -806,18 +1137,22 @@ function collectStatus(ctx) {
     recentLog = fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean).slice(-8);
   }
 
-  return {
+  const pipeline = parsePipelineSummary(boardTaskRows, state, state.activeCrossAgent);
+  const statusObj = {
     checkedAt: formatIsoOffset(),
     projectName: config.projectName,
     batchId: config.batchId,
     tier: config.tier,
+    automationMode: config.automationMode || 'full-auto',
     runtime: config.runtime,
     git: { branch, headFull, headShort: headFull ? headFull.slice(0, 8) : null, dirtyCount },
+    worktrees,
     boardMtime: formatLocalTime(boardMtimeSec),
     abCardMtime: formatLocalTime(abCardMtimeSec),
     snapshot,
     changedSinceLastSnapshot,
     roles,
+    pipeline,
     boardTaskRows,
     boardLastLogs,
     abHeadings,
@@ -831,6 +1166,8 @@ function collectStatus(ctx) {
     },
     recentLog,
   };
+  statusObj.telemetryLine = buildTelemetryLine(statusObj);
+  return statusObj;
 }
 
 function cmdStatus(flags) {
@@ -840,13 +1177,24 @@ function cmdStatus(flags) {
     console.log(JSON.stringify(st, null, 2));
     return;
   }
-  console.log(`=== ${st.projectName} (${st.batchId} / ${st.tier} / ${st.runtime}) @ ${st.checkedAt} ===`);
+  if (flags.compact) {
+    console.log(st.telemetryLine);
+    return;
+  }
+  console.log(`=== ${st.projectName} (${st.batchId} / ${st.tier} / ${st.automationMode} / ${st.runtime}) @ ${st.checkedAt} ===`);
+  console.log(`TELEMETRY: ${st.telemetryLine}`);
   for (const [r, info] of Object.entries(st.roles)) {
     const via = info.resolvedVia && info.resolvedVia !== 'unbound' ? ` via=${info.resolvedVia}` : '';
     const title = info.threadName ? ` name=${JSON.stringify(info.threadName)}` : '';
     console.log(`THREAD ${r.toUpperCase()}: status=${info.status}${via} idle_seconds=${info.idleSeconds ?? '-'} last_write=${info.lastWrite ?? '-'} no_prog_pushes=${info.consecutivePushesWithoutProgress}${title}`);
   }
   console.log(`GIT: branch=${st.git.branch ?? '-'} HEAD=${st.git.headShort ?? '-'} DIRTY=${st.git.dirtyCount ?? '-'}`);
+  if (st.worktrees.length > 0) {
+    console.log('--- worktrees ---');
+    for (const wt of st.worktrees) {
+      console.log(`WORKTREE ${wt.id} (${wt.source}): exists=${wt.exists} branch=${wt.branch ?? '-'} HEAD=${wt.headShort ?? '-'} DIRTY=${wt.dirtyCount ?? '-'} path=${wt.path}`);
+    }
+  }
   console.log(`BOARD_MTIME=${st.boardMtime ?? '-'}  AB_CARD_MTIME=${st.abCardMtime ?? '-'}`);
   if (st.breakers.fixCapBreaker || st.breakers.noProgressRoles.length > 0) {
     console.log(`BREAKERS: fixCap=${JSON.stringify(st.breakers.fixCapStages)} noProgressRoles=${JSON.stringify(st.breakers.noProgressRoles)}`);
@@ -866,10 +1214,121 @@ function cmdStatus(flags) {
   for (const l of st.recentLog) console.log(l);
 }
 
+function tryLoadStatusOptional(flags) {
+  try {
+    const ctx = loadConfigAndPaths(flags);
+    return collectStatus(ctx);
+  } catch {
+    return null;
+  }
+}
+
+function cmdRender(flags, kindRaw) {
+  const kind = String(kindRaw || 'heartbeat').trim().toLowerCase();
+  const st = tryLoadStatusOptional(flags);
+  const ts = String(st?.checkedAt || formatIsoOffset()).slice(11, 19);
+  const pipeline = flags.pipeline || st?.pipeline?.markdownBreadcrumb || '-';
+  const mode = String(flags.mode || st?.automationMode || 'full-auto').toUpperCase();
+  const batch = flags.batch || st?.batchId || 'BATCH';
+
+  if (kind === 'heartbeat') {
+    if (st) {
+      console.log(st.telemetryLine);
+      return;
+    }
+    const role = String(flags.role || 'AB').toUpperCase();
+    const idle = flags.idle ?? '0';
+    const sha = String(flags.sha || '--------').slice(0, 8);
+    const dirty = flags.dirty ?? '0';
+    console.log(`> \`● RELAY\` \`${ts}\` \`│\` **\`${batch}\`** \`│\` \`${role}\` 活跃 \`${idle}s\` \`·\` \`HEAD ${sha}\` \`·\` \`Δ ${dirty}\` \`│\` *Hold*`);
+    return;
+  }
+
+  if (kind === 'nudge') {
+    const task = flags.task || 'CURRENT-TASK';
+    const role = String(flags.role || 'AB').toUpperCase();
+    const idle = flags.idle ?? st?.roles?.[role.toLowerCase()]?.idleSeconds ?? '-';
+    const file = flags.file || 'msg.txt';
+    const exitCode = flags.exit ?? '0';
+    console.log(`> \`▲ NUDGE\` \`${ts}\` \`│\` **\`${task}\`** \`→\` \`${role}\`（停滞 \`${idle}s\` · \`${file}\` · \`exit ${exitCode}\`） \`│\` *Resumed*`);
+    return;
+  }
+
+  if (kind === 'milestone') {
+    const task = flags.task || 'T-01-R0';
+    const verdictRaw = String(flags.verdict || 'PASS').trim();
+    const verdictUpper = /通过|PASS/i.test(verdictRaw)
+      ? 'PASS'
+      : (/整改|REWORK/i.test(verdictRaw) ? 'REWORK' : (/阻塞|BLOCKED/i.test(verdictRaw) ? 'BLOCKED' : verdictRaw.toUpperCase()));
+    const gate = flags.gate || (verdictUpper === 'PASS' ? 'Next Gate Unlocked' : 'Gate Held');
+    const sha8 = String(flags.sha || st?.git?.headShort || '--------').slice(0, 8);
+    const parent8 = flags.parent ? String(flags.parent).slice(0, 8) : '-';
+    const reportName = flags.report ? path.basename(String(flags.report)) : '-';
+    const sha256Short = flags.sha256 ? String(flags.sha256).slice(0, 8) : '-';
+    const counts = flags.counts || '0 / 0 / 0 / 0 / 0';
+    const unverified = flags.unverified ? ` *(未验 ${flags.unverified})*` : '';
+    const next = flags.next || '按流水线自动推进下一阶段';
+    console.log([
+      `> **◆ MILESTONE · \`${task}\` — \`${verdictUpper}\` (\`${gate}\`)**`,
+      `> 流水线：${pipeline} ｜ 模式：\`${mode}\``,
+      '',
+      '| 冻结对象与父链 | 独立报告与指纹 | 缺陷分布（阻/高/中/低/提） | 下一步自动流转 |',
+      '| :--- | :--- | :---: | :--- |',
+      `| \`${sha8}\` ← \`${parent8}\` | \`${reportName}\` · \`${sha256Short}\` | \`${counts}\`${unverified} | ${next} |`,
+    ].join('\n'));
+    return;
+  }
+
+  if (kind === 'breaker') {
+    const task = flags.task || 'T-01-FIX2-R0';
+    const reason = flags.reason || '单阶段返修次数达到上限或遇到阻塞门禁';
+    const sha8 = String(flags.sha || st?.git?.headShort || '--------').slice(0, 8);
+    const report = flags.report ? path.basename(String(flags.report)) : '-';
+    const options = flags.options || '① 批准追加修复轮次；② 发起 Spec 变更（CR）；③ 人工接管';
+    console.log([
+      '> [!CAUTION]',
+      `> **■ CIRCUIT BREAKER · \`${task}\` — 自动推进已暂停**`,
+      `> - **触发原因**：${reason}`,
+      `> - **现场锚点**：冻结 SHA \`${sha8}\` · 报告 \`${report}\``,
+      `> - **需你拍板**：${options}`,
+    ].join('\n'));
+    return;
+  }
+
+  if (kind === 'complete') {
+    const countdown = flags.countdown ? `\`${flags.countdown}s\`` : '`未启用自动关机`';
+    const rawStages = String(flags.stages || '');
+    const rows = [];
+    if (rawStages.trim().startsWith('[')) {
+      for (const item of JSON.parse(rawStages)) {
+        rows.push(`| \`${item.stage || '-'}\` | \`${String(item.sha || '-').slice(0, 8)}\` | \`${item.fixes ?? 0}\` | \`${item.report ? path.basename(String(item.report)) : '-'}\` · \`${String(item.sha256 || '-').slice(0, 8)}\` | \`${item.gate || 'PASS'}\` |`);
+      }
+    } else if (rawStages.trim()) {
+      for (const seg of rawStages.split(',').map((s) => s.trim()).filter(Boolean)) {
+        const [stg = '-', sha = '-', fixes = '0', report = '-', hash = '-', gate = 'PASS'] = seg.split(':');
+        rows.push(`| \`${stg}\` | \`${sha.slice(0, 8)}\` | \`${fixes}\` | \`${path.basename(report)}\` · \`${hash.slice(0, 8)}\` | \`${gate}\` |`);
+      }
+    } else {
+      rows.push(`| \`${batch}\` | \`${st?.git?.headShort ?? '-'}\` | \`0\` | \`FINAL_SUMMARY.md\` | \`PASS\` |`);
+    }
+    console.log([
+      '> [!TIP]',
+      `> **✓ COMPLETED · \`${batch}\` — 全阶段独立审计通关闭环**`,
+      `> 流水线：${pipeline} ｜ 巡检已停止 ｜ 关机倒计时：${countdown}`,
+      '',
+      '| 阶段 | 最终冻结 SHA | 返修 | 独立审计报告与 SHA-256 | 门禁 |',
+      '| :--- | :--- | :---: | :--- | :---: |',
+      ...rows,
+    ].join('\n'));
+    return;
+  }
+
+  throw new Error(`Unknown render subcommand "${kind}". Expected: heartbeat, nudge, milestone, breaker, or complete.`);
+}
+
 function cmdSend(flags) {
   const ctx = loadConfigAndPaths(flags);
-  const role = (flags.role || '').toLowerCase();
-  if (!['hub', 'ab', 'c'].includes(role)) throw new Error('Missing or invalid --role <hub|ab|c>');
+  const role = normalizeRoleName(flags.role, 'send --role');
   if (!flags.file) throw new Error('Missing --file <message-file>');
   const msgPath = path.resolve(flags.file);
   if (!fs.existsSync(msgPath)) throw new Error(`Message file missing: ${msgPath}`);
@@ -900,6 +1359,7 @@ function cmdSend(flags) {
     }
   }
 
+  const targetCwd = resolveRoleCwdForCodex(ctx.config, role, ctx.winProjectRoot);
   let sendRes;
   if (ctx.config.runtime === 'wsl') {
     const bashScript = `
@@ -913,14 +1373,14 @@ cd "$CWD" || exit 2
 timeout 120 codex queue --thread "$TID" --message "$MSG" --resume -C "$CWD" 2>&1 | tail -n 20
 exit \${PIPESTATUS[0]}
 `;
-    sendRes = runWslBash(ctx.config.wslDistro, bashScript, [tid, ctx.config.projectPath], rawMsg, 130000);
+    sendRes = runWslBash(ctx.config.wslDistro, bashScript, [tid, targetCwd], rawMsg, 130000);
   } else {
     const rt = normalizeRuntime(ctx.config.runtime);
     const codexExe = resolveLocalCodexBin(ctx.config, rt);
     if (!codexExe) throw new Error(`Cannot locate ${rt} codex binary; configure codexBin in relay.json`);
     sendRes = spawnSync(
       codexExe,
-      ['queue', '--thread', tid, '--message', rawMsg, '--resume', '-C', ctx.config.projectPath],
+      ['queue', '--thread', tid, '--message', rawMsg, '--resume', '-C', targetCwd],
       { encoding: 'utf8', timeout: 120000, windowsHide: true, shell: false },
     );
   }
@@ -955,8 +1415,7 @@ exit \${PIPESTATUS[0]}
 
 function cmdBind(flags) {
   const ctx = loadConfigAndPaths(flags);
-  const role = (flags.role || '').toLowerCase();
-  if (!['hub', 'ab', 'c'].includes(role)) throw new Error('bind requires --role <hub|ab|c>');
+  const role = normalizeRoleName(flags.role, 'bind --role');
 
   const state = loadOrCreateState(ctx.statePath);
   const oldTid = ctx.config.threads?.[role] || '';
@@ -1009,8 +1468,7 @@ function cmdBind(flags) {
 
 function cmdSpawn(flags) {
   const ctx = loadConfigAndPaths(flags);
-  const role = (flags.role || '').toLowerCase();
-  if (!['hub', 'ab', 'c'].includes(role)) throw new Error('spawn requires --role <hub|ab|c>');
+  const role = normalizeRoleName(flags.role, 'spawn --role');
 
   const sandbox = flags.sandbox || (role === 'hub' ? 'read-only' : 'workspace-write');
   if (!['read-only', 'workspace-write', 'danger-full-access'].includes(sandbox)) {
@@ -1033,13 +1491,15 @@ function cmdSpawn(flags) {
     ].join('\n');
   }
 
-  const execArgs = ['exec', '-C', ctx.config.projectPath, '-s', sandbox, '-a', 'never', '--json', '-'];
+  const targetCwd = resolveRoleCwdForCodex(ctx.config, role, ctx.winProjectRoot);
+  const winSpawnCwd = resolveRoleWinCwd(ctx.config, role, ctx.winProjectRoot);
+  const execArgs = ['exec', '-C', targetCwd, '-s', sandbox, '-a', 'never', '--json', '-'];
   if (flags['dry-run']) {
     console.log(JSON.stringify({
       dryRun: true,
       runtime: ctx.config.runtime,
       wslDistro: ctx.config.wslDistro || '',
-      projectPath: ctx.config.projectPath,
+      projectPath: targetCwd,
       role,
       sandbox,
       args: execArgs,
@@ -1058,13 +1518,13 @@ SANDBOX="$2"
 cd "$CWD" || exit 2
 codex exec -C "$CWD" -s "$SANDBOX" -a never --json -
 `;
-    spawnRes = runWslBash(ctx.config.wslDistro, bashScript, [ctx.config.projectPath, sandbox], promptText, 180000);
+    spawnRes = runWslBash(ctx.config.wslDistro, bashScript, [targetCwd, sandbox], promptText, 180000);
   } else {
     const rt = normalizeRuntime(ctx.config.runtime);
     const codexExe = resolveLocalCodexBin(ctx.config, rt);
     if (!codexExe) throw new Error(`Cannot locate ${rt} codex binary; configure codexBin in relay.json`);
     spawnRes = spawnSync(codexExe, execArgs, {
-      cwd: ctx.winProjectRoot,
+      cwd: winSpawnCwd,
       input: promptText,
       encoding: 'utf8',
       timeout: 180000,
@@ -1177,8 +1637,7 @@ function cmdState(flags, action) {
   }
 
   if (action === 'rotate-thread') {
-    const role = (flags.role || '').toLowerCase();
-    if (!['hub', 'ab', 'c'].includes(role)) throw new Error('rotate-thread requires --role <hub|ab|c>');
+    const role = normalizeRoleName(flags.role, 'rotate-thread --role');
     if (!flags.thread || !UUID_EXACT_RE.test(flags.thread)) throw new Error('rotate-thread requires valid 36-char --thread UUID');
     const oldTid = ctx.config.threads?.[role] || '';
     const newTid = flags.thread.toLowerCase();
@@ -1193,8 +1652,7 @@ function cmdState(flags, action) {
   }
 
   if (action === 'reset-pushes') {
-    const role = (flags.role || '').toLowerCase();
-    if (!['hub', 'ab', 'c'].includes(role)) throw new Error('reset-pushes requires --role <hub|ab|c>');
+    const role = normalizeRoleName(flags.role, 'reset-pushes --role');
     state.roles[role] = { ...(state.roles[role] || {}), consecutivePushesWithoutProgress: 0 };
     saveState(ctx.statePath, state);
     console.log(JSON.stringify({ ok: true, role, consecutivePushesWithoutProgress: 0 }, null, 2));
@@ -1293,6 +1751,9 @@ async function main() {
       break;
     case 'status':
       cmdStatus(flags);
+      break;
+    case 'render':
+      cmdRender(flags, positionals[1]);
       break;
     case 'send':
       cmdSend(flags);

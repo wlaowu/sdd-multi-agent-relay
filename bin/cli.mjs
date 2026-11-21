@@ -20,7 +20,7 @@ const PLUGIN_JSON_SRC = path.join(REPO_ROOT, 'plugin.json');
 const RELAY_SRC = path.join(SKILL_SRC, 'scripts', 'relay.mjs');
 
 const RELAY_PASSTHROUGH_CMDS = new Set([
-  'init', 'threads', 'bind', 'spawn', 'status', 'send', 'state', 'notify',
+  'init', 'threads', 'bind', 'spawn', 'status', 'send', 'state', 'notify', 'render',
 ]);
 
 function printHelp() {
@@ -46,7 +46,7 @@ Auto-Install & Lifecycle Commands:
               Options: [--home <dir>] [--wsl-distro <name>]
 
 Relay Supervision Commands (forwarded to relay.mjs):
-  init | threads | bind | spawn | status | send | state | notify
+  init | threads | bind | spawn | status | send | state | notify | render
   (Run "sdd-multi-agent-relay init --help" or "--help" on any relay command)
 `);
 }

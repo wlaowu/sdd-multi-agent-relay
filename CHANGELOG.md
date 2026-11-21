@@ -1,5 +1,17 @@
 # 更新日志（CHANGELOG）
 
+## [1.1.0] - 2026-11-21
+
+### Ops-Cockpit 标准化输出与多 Worktree / 自定义角色支持
+- **工程驾驶舱（Ops-Cockpit）标准化输出引擎**：
+  - `relay.mjs status` 新增 `--compact` 参数，并在 JSON 中新增 `pipeline` 与 `telemetryLine`，原生拼出单行遥测条（几何徽章 `● RELAY` / `◐ AUDIT` / `◆ HANDOFF` / `▲ IDLE` / `■ BREAKER` + 流水线进度面包屑 + 活跃秒数 + 主仓/Worktree `HEAD` 与 `Δ` 计数），彻底消除多设备多会话输出漂移。
+  - 新增 `relay.mjs render <heartbeat|nudge|milestone|breaker|complete>` 子命令（同步接入 `bin/cli.mjs` 透传），直接输出停滞唤醒单行、4 列阶段里程碑表、熔断 `CAUTION` 与收官 `TIP` 汇总表。
+- **多 `git worktree` 与自定义角色监控**：
+  - 在 `.agents/relay.json` 新增 `worktrees: { autoDiscover: true, roleWorktrees: {} }`（同时兼容顶层 `roleWorktrees`），`status` 自动采集显式配置与 `git worktree list --porcelain` 发现的次级 worktree 的 `branch` / `HEAD` / `dirtyCount`，并在 `send` / `spawn` 时自动切到对应角色 worktree 执行。
+  - 解除 `['hub', 'ab', 'c']` 硬编码限制，支持在 `threads` / `threadMatchers` / `roleWorktrees` 中绑定任意自定义小写角色名（如 `a`、`b`）。
+- **显式值守模式与纯净值守切换**：
+  - 配置模板新增 `automationMode`（`"full-auto"` / `"semi-auto"`）；`SKILL.md` 与 `ROLE_PROMPTS.md` 固化了 `§4.1 Ops-Cockpit 输出规范` 与 `§5 纯净值守窗口切换协议`。
+
 ## [1.0.0] - 2026-11-21
 
 ### 初始发布（Initial Team Release）

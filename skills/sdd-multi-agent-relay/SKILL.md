@@ -77,44 +77,56 @@ description: >-
 
 ## 四、值守巡检主循环（每 3 分钟 `schedule` Cron）
 
-使用 `schedule`（`CronExpression: "*/3 * * * *"`，`IsDaemon: true`）启动巡检。**无动作时对用户保持安静，绝不越权写业务代码、改看板/任务卡、代填回执或偷窥 `~/.codex/sessions/*.jsonl` 正文。**
+使用 `schedule`（`CronExpression: "*/3 * * * *"`，`IsDaemon: true`）启动巡检。**无动作时严禁冗余刷屏，绝不越权写业务代码、改看板/任务卡、代填回执或偷窥 `~/.codex/sessions/*.jsonl` 正文。**
 
 每次唤醒严格按以下优先级顺序检查并处置：
 
 1. **采集双端元数据与状态**：
-   - 在目标项目目录下直接运行 `node "...\scripts\relay.mjs" status --json`（或显式传 `--project` / `--config`）
+   - 在目标项目目录下直接运行 `node "...\scripts\relay.mjs" status --json`（或显式传 `--project` / `--config`）；支持自动识别多 `git worktree`（`worktrees.autoDiscover` / `worktrees.roleWorktrees`）及自定义角色名（除 `hub`/`ab`/`c` 外亦支持 `a`/`b` 等角色键）。
    - 若存在活跃子会话，调用 `manage_subagents{Action:"list"}` 检查子会话是否正常运行（防 `429`/崩溃静默空等）。
 
 2. **检查熔断与用户阻塞（最高优先暂停）**：
    - 若 `noProgressBreaker`（连续 3 次推动零变化）、`fixCapBreaker`（单阶段返修已达 `maxFixRounds=2`）、或看板写明需用户拍板/缺外部密钥权限：
-   - **立即停止自动推动**，运行 `relay.mjs notify --event circuit_breaker|blocker ...` 发送告警，并立即向用户报告明确卡点。
+   - **立即停止自动推动**，运行 `relay.mjs notify --event circuit_breaker|blocker ...` 发送告警，并立即用 `render breaker` 向用户报告明确卡点。
 
 3. **检查终局退出条件**：
    - 仅当所有计划阶段均已冻结 SHA、对应 `R0` 报告 verdict 为 `通过`、且 `Codex-Hub` 在 `DISPATCH_BOARD.md` 登记全部完成闭环后：
    - 核实 `FINAL_SUMMARY.md` 已落盘（如未写则请 `Codex-Hub` / `Hub` 补齐或由中继索引核对）；
    - 运行 `manage_task` 取消定时巡检，调用 `relay.mjs notify --event complete ...`；
-   - 向用户汇报全部 SHA 与审计报告链接；若用户预先授权且 `shutdownOnComplete.enabled=true`，执行 `shutdown.exe /s /t <delaySec> /c "..."`。
+   - 运行 `relay.mjs render complete ...` 向用户汇报全部 SHA 与审计报告总览表；若用户预先授权且 `automationMode="full-auto"`、`shutdownOnComplete.enabled=true`，执行 `shutdown.exe /s /t <delaySec> /c "..."`。
 
 4. **优先处理跨 Agent 待转交（Codex ↔ Antigravity）**：
-   - 当 `pendingCrossAgent` 出现未在 `relay-state.json` 记录的「发送到：Antigravity / 待转交」事项时：
+   - 当 `pendingCrossAgent` 出现未在 `relay-state.json` 记录的「发送到：Antigravity / 待转交」事项时（且在 `automationMode="full-auto"` 下自动代行；若 `semi-auto` 则按约定转交或提示）：
    - 按 [ROLE_PROMPTS.md](./references/ROLE_PROMPTS.md) 拉起（或 `send_message` 复用）独立 `self` 子会话（`Model: "pro"`，或随父高配 `"inherit"`），立即执行 `relay.mjs state start-review ...` 记录进行中状态；
    - 子会话落盘报告后，在磁盘逐项校验目标报告 `sha256` 与历史报告未篡改，执行 `relay.mjs state finish-review ...`，写报文并用 `relay.mjs send --role hub ...` 回传 `Codex-Hub` 核收。
 
 5. **Codex 防停推动（仅在无进行中 R0 且目标 `idle_seconds >= 180` 时触发）**：
-   - `relay.mjs send` 内置同 `last_write` 去重保护与无进展计数：
+   - `relay.mjs send` 内置同 `last_write` 去重保护与无进展计数（配置了 `worktrees.roleWorktrees[role]` 时自动以对应 worktree 作为 `-C` 目录）：
    - **规则 a**：`AB` 停且当前任务尚无冻结 SHA 完成回执 → `relay.mjs send --role ab ...`
    - **规则 b**：`AB` 停且已交完成回执，`HUB` 停且看板未核收 → `relay.mjs send --role hub ...`
    - **规则 c**：`HUB` 停且已在看板/任务卡派发新单，`AB` 停且未接棒 → `relay.mjs send --role ab ...`
    - **规则 d**：双方都停但职责边界不明 → `relay.mjs send --role hub ...`
 
+### §4.1 Ops-Cockpit 标准化输出规范（全设备统一驾驶舱视效）
+
+为了保证不同设备与项目巡检输出统一克制、一目了然，一律采用几何状态徽章（`●`/`◐`/`◆`/`▲`/`■`/`✓`）与 `relay.mjs` 内置渲染器，禁止临场自由发挥：
+
+| 场景 | 触发时机 | 必须采用的输出方式（见 [ROLE_PROMPTS.md](./references/ROLE_PROMPTS.md#九ops-cockpit-标准化输出模板中继主会话直接复用)） |
+| :--- | :--- | :--- |
+| **高频静默心跳** | 每 3 分钟巡检无增量或仅需静默等待时 | 直接原样输出 `relay.mjs status --compact` 生成的 **1 行遥测条**（含状态徽章、最近写入时间、批次流水线进度、角色 `idle`、主仓/Worktree `HEAD` 与 `Δ`）。 |
+| **停滞唤醒单行** | 触发规则 a–d `send` 后 | 运行 `relay.mjs render nudge ...` 输出 **1 行 `▲ NUDGE`** 确认，不堆砌段落。 |
+| **阶段里程碑卡** | `R0` 出裁定 / 解锁下一阶段 / 新阶段正式开工时 | 运行 `relay.mjs render milestone ...` 输出 **4 列紧凑状态表**（冻结对象与父链、报告与 SHA-256、缺陷分布、自动流转）。 |
+| **熔断与终局卡** | 触达 `maxFixRounds` / 阻塞 或 全批通关收官 | 运行 `relay.mjs render breaker` 或 `render complete` 输出高亮 Callout 块与终局汇总表。 |
+
 ---
 
-## 五、服务重启 / 模型切换断点恢复协议
+## 五、服务重启 / 模型切换断点恢复与纯净值守切换协议
 
-收到系统 `[Notice] All your subagents and background tasks have been stopped` 或用户切换模型后：
+收到系统 `[Notice] All your subagents and background tasks have been stopped`、切换模型、或在当前会话完成建仓/配置想切入纯净无杂音的值守窗时：
 
-1. 运行 `relay.mjs status --config "<relay.json 路径>" --json` 与 `relay.mjs state show --config "<relay.json 路径>"`。
-2. 若 `activeCrossAgent` 不为空：
+1. **新开空白纯净窗口（推荐用于长挂机）**：在空白窗口发送「按 `sdd-multi-agent-relay` 断点恢复并开始巡检」；首条响应标明 `automationMode`（`full-auto` / `semi-auto`）并检查是否存在旧窗残留巡检（避免双巡检抢推送）。
+2. 运行 `relay.mjs status --config "<relay.json 路径>" --json` 与 `relay.mjs state show --config "<relay.json 路径>"`。
+3. 若 `activeCrossAgent` 不为空：
    - 先检查其 `outputPath` 是否已生成在磁盘上；若已落盘且内容完整，直接核验 SHA-256 并走 `finish-review` + 回传 `Codex-Hub`；
    - 若尚未落盘，**新建** `self` 子会话（避免复用旧模型失败配额会话）继续执行，并更新 `relay.mjs state start-review`。
-3. 重新启动 3 分钟定时巡检 `schedule`，无需向 Codex 重复投递 `last_write` 未变化的消息。
+4. 重新启动 3 分钟定时巡检 `schedule`，无需向 Codex 重复投递 `last_write` 未变化的消息。

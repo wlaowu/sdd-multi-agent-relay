@@ -287,3 +287,58 @@ Antigravity 侧 R0 独立审计专席已完成 <REVIEW-TASK-ID>，新报告已�
 
 核对无误后，请回复接班确认摘要（当前所在任务编号、当前分支 HEAD、待办下一步），然后严格按照 <Codex-Hub | AB> 的写入边界接续执行。
 ```
+
+---
+
+## 九、Ops-Cockpit 标准化输出模板（中继主会话直接复用）
+
+巡检、唤醒、里程碑、熔断与收官统一使用以下「工程驾驶舱」规范（也可直接调用 `node "...\scripts\relay.mjs" status --compact` 或 `render <heartbeat|nudge|milestone|breaker|complete>` 自动生成）：
+
+### 1. 高频 3 分钟心跳（严格单行遥测条）
+- **单仓推进中**：
+  ```markdown
+  > `● RELAY` `16:03:50` `│` **`PKG-ORD-01`** `T-01 ✓` · **`▸ T-02`** · `T-03 ◌` `│` `AB` 活跃 `6s` `·` `HEAD 9a6f688c` `·` `Δ 12` `│` *Hold*
+  ```
+- **多 Worktree 并行中**：
+  ```markdown
+  > `● RELAY` `16:03:50` `│` **`PKG-ORD-01`** `T-01 ✓` · **`▸ T-02`** `│` `A` 6s (Δ4) `·` `B` 14s (Δ2) `│` *Hold*
+  ```
+- **独立 `R0` 隔离审计中**：
+  ```markdown
+  > `◐ AUDIT` `16:03:44` `│` **`PKG-ORD-01`** `T-01 ✓` · **`▸ T-02`** `│` `R0#a1b2c3d4` 隔离审计 `T-02-R0` `·` `HEAD 9a6f688c` `·` `Δ 0` `│` *Wait*
+  ```
+
+### 2. 停滞唤醒（`render nudge`）
+```markdown
+> `▲ NUDGE` `16:09:12` `│` **`T-02`** `→` `AB`（停滞 `215s` · `msg-ab-005.txt` · `exit 0`） `│` *Resumed*
+```
+
+### 3. 阶段里程碑表（`render milestone`）
+```markdown
+> **◆ MILESTONE · `T-01-R0` — `PASS` (`T-02 Gate Unlocked`)**
+> 流水线：`T-01 ✓` · `T-02 ◌` ｜ 模式：`FULL-AUTO`
+
+| 冻结对象与父链 | 独立报告与指纹 | 缺陷分布（阻/高/中/低/提） | 下一步自动流转 |
+| :--- | :--- | :---: | :--- |
+| `9a6f688c` ← `3b7c12a0` | `T-01-R0-review.md` · `a4477ec4` | `0 / 0 / 0 / 1 / 2` *(未验 1)* | 已回传 `Codex-Hub` (`exit 0`) → 自动派发 `T-02` |
+```
+
+### 4. 熔断告警与终局总览（`render breaker` / `render complete`）
+```markdown
+> [!CAUTION]
+> **■ CIRCUIT BREAKER · `T-02-FIX2-R0` — 自动推进已暂停**
+> - **触发原因**：单阶段返修触达上限 `2 / 2`（高危 `1` 项未闭：`R0-T02-01`）
+> - **现场锚点**：冻结 SHA `4e5f6789` · 报告 `T-02-FIX2-R0-review.md`
+> - **需你拍板**：① 批准追加第 3 轮修复；② 发起 Spec CR 调整边界；③ 人工接管
+```
+
+```markdown
+> [!TIP]
+> **✓ COMPLETED · `PKG-ORD-01` — 全阶段独立审计通关闭环**
+> 流水线：`T-01 ✓` · `T-02 ✓` · `T-03 ✓` ｜ 巡检已停止 ｜ 关机倒计时：`120s`
+
+| 阶段 | 最终冻结 SHA | 返修 | 独立审计报告与 SHA-256 | 门禁 |
+| :--- | :--- | :---: | :--- | :---: |
+| `T-01` | `9a6f688c` | `0` | `T-01-R0-review.md` · `a4477ec4` | `PASS` |
+| `T-02` | `7b8c9d01` | `1` | `T-02-FIX1-R0-review.md` · `8d1be0c0` | `PASS` |
+```

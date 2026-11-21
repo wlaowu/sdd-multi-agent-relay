@@ -19,6 +19,7 @@
   6. 特性分支 + 门禁 Tag + 高危红线约束；
   7. 终局 `FINAL_SUMMARY.md`（含效能复盘统计）与可选安全关机协议。
 - **零固定目录、零固定会话**：在任意项目任意子目录自动向上发现 `.agents/relay.json`；Codex 会话支持 **标题动态匹配（`threadMatchers`）**、**随时关键词改绑（`bind --match`）** 与 **一键自动新建会话（`spawn`）**。
+- **Ops-Cockpit 驾驶舱输出与多 Worktree 监控（`v1.1.0`）**：`relay.mjs status --compact` 与 `render` 子命令原生输出统一遥测条、4 列里程碑表、熔断与收官卡片；支持 `worktrees.autoDiscover` / `roleWorktrees` 与自定义角色（如 `a`/`b`）及显式 `automationMode`（`full-auto` / `semi-auto`）。
 
 ---
 

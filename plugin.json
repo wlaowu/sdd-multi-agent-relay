@@ -1,7 +1,7 @@
 {
   "name": "sdd-multi-agent-relay",
   "displayName": "SDD Multi-Agent Relay",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "repository": "https://github.com/wlaowu/sdd-multi-agent-relay",
   "logo": "assets/logo.svg",
   "description": "Spec-Driven Multi-Agent Gated Orchestration Workflow (0 + 2+3 roles) with cross-platform VS Code Codex anti-stall relay, R0 isolated audits, and standardized Spec/Plan/Task templates.",

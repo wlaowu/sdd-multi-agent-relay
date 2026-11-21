@@ -206,3 +206,85 @@ test('auto-installer lifecycle (install plugin+codex, doctor, project mode, upda
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+function runGitCmd(cwd, args) {
+  return spawnSync('git', ['-C', cwd, ...args], {
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 20000,
+  });
+}
+
+test('v1.1.0 Ops-Cockpit status --compact, render subcommands, custom roles, and multi-worktree telemetry work', () => {
+  const tmp = makeTempDir('sdd-wt-test-');
+  const mainRepo = path.join(tmp, 'main-repo');
+  const wtA = path.join(tmp, 'wt-a');
+  fs.mkdirSync(mainRepo, { recursive: true });
+
+  try {
+    assert.equal(runGitCmd(mainRepo, ['init']).status, 0);
+    assert.equal(runGitCmd(mainRepo, ['config', 'user.name', 'Test User']).status, 0);
+    assert.equal(runGitCmd(mainRepo, ['config', 'user.email', 'test@example.com']).status, 0);
+    fs.writeFileSync(path.join(mainRepo, 'README.md'), '# Demo Repo\n', 'utf8');
+    assert.equal(runGitCmd(mainRepo, ['add', 'README.md']).status, 0);
+    assert.equal(runGitCmd(mainRepo, ['commit', '-m', 'chore: init']).status, 0);
+
+    const wtRes = runGitCmd(mainRepo, ['worktree', 'add', '-b', 'feat/worker-a', wtA]);
+    assert.equal(wtRes.status, 0, wtRes.stderr);
+    fs.writeFileSync(path.join(wtA, 'dirty.txt'), 'uncommitted change\n', 'utf8');
+
+    const initRes = runNode([CLI_PATH, 'init', '--project', mainRepo, '--runtime', 'windows', '--name', 'WtApp', '--batch', 'PKG-WT-01', '--automation-mode', 'semi-auto']);
+    assert.equal(initRes.status, 0, initRes.stderr);
+
+    // Bind custom role 'a' and configure explicit roleWorktrees
+    const cfgPath = path.join(mainRepo, '.agents', 'relay.json');
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    cfg.worktrees = { autoDiscover: true, roleWorktrees: { a: '../wt-a' } };
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+
+    const bindCustom = runNode([CLI_PATH, 'bind', '--project', mainRepo, '--role', 'a', '--auto', '--match', 'WtApp-Worker-A']);
+    assert.equal(bindCustom.status, 0, bindCustom.stderr);
+    assert.equal(JSON.parse(bindCustom.stdout).role, 'a');
+
+    const stRes = runNode([CLI_PATH, 'status', '--project', mainRepo, '--json']);
+    assert.equal(stRes.status, 0, stRes.stderr);
+    const st = JSON.parse(stRes.stdout);
+    assert.equal(st.automationMode, 'semi-auto');
+    assert.ok(st.roles.a, 'Expected custom role "a" in status.roles');
+    assert.ok(Array.isArray(st.worktrees) && st.worktrees.length >= 1, 'Expected configured/discovered worktrees');
+    const wtEntry = st.worktrees.find((w) => w.role === 'a');
+    assert.ok(wtEntry && wtEntry.exists && wtEntry.dirtyCount === 1, `Expected wt-a dirtyCount=1, got ${JSON.stringify(wtEntry)}`);
+    assert.match(st.telemetryLine, /PKG-WT-01/);
+    assert.match(st.telemetryLine, /Δ1/);
+
+    const compactRes = runNode([CLI_PATH, 'status', '--project', mainRepo, '--compact']);
+    assert.equal(compactRes.status, 0, compactRes.stderr);
+    assert.match(compactRes.stdout, /│/);
+    assert.match(compactRes.stdout, /Δ/);
+
+    const nudgeRes = runNode([CLI_PATH, 'render', 'nudge', '--project', mainRepo, '--role', 'a', '--task', 'T-01', '--idle', '210', '--file', 'msg-a-001.txt', '--exit', '0']);
+    assert.equal(nudgeRes.status, 0, nudgeRes.stderr);
+    assert.match(nudgeRes.stdout, /▲ NUDGE/);
+
+    const msRes = runNode([CLI_PATH, 'render', 'milestone', '--project', mainRepo, '--task', 'T-01-R0', '--verdict', '通过', '--gate', 'T-02 Unlocked', '--sha', '1234567890abcdef', '--parent', '0000000011111111', '--report', 'T-01-R0-review.md', '--sha256', 'deadbeefcafebabe', '--counts', '0 / 0 / 0 / 1 / 2']);
+    assert.equal(msRes.status, 0, msRes.stderr);
+    assert.match(msRes.stdout, /◆ MILESTONE/);
+    assert.match(msRes.stdout, /PASS/);
+
+    const brRes = runNode([CLI_PATH, 'render', 'breaker', '--project', mainRepo, '--task', 'T-01-FIX2-R0', '--reason', 'maxFixRounds reached']);
+    assert.equal(brRes.status, 0, brRes.stderr);
+    assert.match(brRes.stdout, /■ CIRCUIT BREAKER/);
+
+    const compRes = runNode([CLI_PATH, 'render', 'complete', '--project', mainRepo, '--stages', 'T-01:12345678:1:T-01-FIX1-R0-review.md:abcd1234:PASS', '--countdown', '120']);
+    assert.equal(compRes.status, 0, compRes.stderr);
+    assert.match(compRes.stdout, /✓ COMPLETED/);
+    assert.match(compRes.stdout, /T-01-FIX1-R0-review\.md/);
+  } finally {
+    try {
+      runGitCmd(mainRepo, ['worktree', 'remove', '--force', wtA]);
+    } catch {
+      // ignore cleanup error
+    }
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
