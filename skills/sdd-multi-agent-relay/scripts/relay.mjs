@@ -1137,16 +1137,16 @@ function parsePipelineSummary(boardTaskRows, state, activeCrossAgent, waveColIdx
   }
 
   const plainParts = stages.map((s) => {
-    if (s.status === 'done') return `${s.stage} ✓`;
-    if (s.status === 'active') return `▸ ${s.stage}`;
-    if (s.status === 'blocked') return `! ${s.stage}`;
-    return `${s.stage} ◌`;
+    if (s.status === 'done') return `✅ ${s.stage}`;
+    if (s.status === 'active') return `🔄 ${s.stage}`;
+    if (s.status === 'blocked') return `⛔ ${s.stage}`;
+    return `⬜ ${s.stage}`;
   });
   const mdParts = stages.map((s) => {
-    if (s.status === 'done') return `\`${s.stage} ✓\``;
-    if (s.status === 'active') return `**\`▸ ${s.stage}\`**`;
-    if (s.status === 'blocked') return `**\`! ${s.stage}\`**`;
-    return `\`${s.stage} ◌\``;
+    if (s.status === 'done') return `✅ \`${s.stage}\``;
+    if (s.status === 'active') return `🔄 **\`${s.stage}\`**`;
+    if (s.status === 'blocked') return `⛔ **\`${s.stage}\`**`;
+    return `⬜ \`${s.stage}\``;
   });
 
   return {
@@ -1728,16 +1728,36 @@ function buildTelemetryLine(st) {
   const hasWorktrees = Array.isArray(st.worktrees) && st.worktrees.length > 0;
   const hasWorking = allLive.some(([, info]) => info.status === 'WORKING');
 
-  let title = '◌ **待命观察中**';
-  if (hasBreaker) title = '■ **自动推进已暂停**';
-  else if (hasEnvRestart) title = '▲ **检测到运行环境刚重启**';
-  else if (hasUnconsumed) title = '▲ **投递消息疑似未消费**';
-  else if (hasPendingEvents) title = '◆ **收到事件信号**';
-  else if (hasAudit) title = '◐ **独立审计进行中**';
-  else if (hasHandoff) title = '◆ **发现待转交任务**';
-  else if (hasWorking && hasWorktrees) title = '● **多线并行开发中**';
-  else if (hasWorking) title = '● **研发推进中**';
-  else if (allLive.length > 0) title = '▲ **等待状态核查**';
+  let icon = '💤';
+  let label = '待命观察中';
+  if (hasBreaker) {
+    icon = '🛑';
+    label = '自动推进已暂停';
+  } else if (hasEnvRestart) {
+    icon = '🔄';
+    label = '检测到运行环境刚重启';
+  } else if (hasUnconsumed) {
+    icon = '⚠️';
+    label = '投递消息疑似未消费';
+  } else if (hasPendingEvents) {
+    icon = '🔔';
+    label = '收到事件信号';
+  } else if (hasAudit) {
+    icon = '🔍';
+    label = '独立审计进行中';
+  } else if (hasHandoff) {
+    icon = '📨';
+    label = '发现待转交任务';
+  } else if (hasWorking && hasWorktrees) {
+    icon = '⚡';
+    label = '多线并行开发中';
+  } else if (hasWorking) {
+    icon = '⏱️';
+    label = '研发推进中';
+  } else if (allLive.length > 0) {
+    icon = '⏳';
+    label = '等待状态核查';
+  }
 
   // Pick latest observed write timestamp HH:MM if present, else checkedAt
   const latestLastWrite = allLive
@@ -1750,72 +1770,74 @@ function buildTelemetryLine(st) {
   const tsFull = String(tsSource).slice(11, 19);
   const ts = tsFull ? tsFull.slice(0, 5) : '--:--';
 
-  const waveSuffix = st.waves?.hasWaves && st.waves.currentWave ? ` · 波次 \`${st.waves.currentWave}\`` : '';
+  const waveSuffix = st.waves?.hasWaves && st.waves.currentWave ? ` ｜ 波次 \`${st.waves.currentWave}\`` : '';
   const timerSuffix = st.activeStageTimer && st.activeStageTimer.elapsedSec !== null && st.activeStageTimer.elapsedSec !== undefined
-    ? ` · 已耗时 ${st.activeStageTimer.elapsedCn || formatDurationCn(st.activeStageTimer.elapsedSec)}`
+    ? ` ｜ 已耗时 ${st.activeStageTimer.elapsedCn || formatDurationCn(st.activeStageTimer.elapsedSec)}`
     : '';
-  const headerLine = st.pipeline?.markdownBreadcrumb
-    ? `> ${title} · \`${ts}\` · \`${st.batchId}\` · 进度 ${st.pipeline.markdownBreadcrumb}${waveSuffix}${timerSuffix}`
-    : `> ${title} · \`${ts}\` · 批次 \`${st.batchId}\`${waveSuffix}${timerSuffix}`;
+  const headerLine = `> ${icon} **${ts} ${label}** ｜ \`${st.batchId}\`${waveSuffix}${timerSuffix}`;
 
-  let detailLine = '';
+  const bodyLines = [];
+  if (st.pipeline?.markdownBreadcrumb) {
+    bodyLines.push(`> - **进度**：${st.pipeline.markdownBreadcrumb}`);
+  }
+
   if (hasBreaker) {
-    const evExtra = hasPendingEvents ? `（另有 ${pendingEvents.length} 条待处理事件信号）` : '';
-    detailLine = `> 触发安全熔断保护，自动中继已暂停，等待你确认处理方式${evExtra}。`;
+    const evExtra = hasPendingEvents ? ` ｜ 另有 ${pendingEvents.length} 条待处理事件信号` : '';
+    bodyLines.push(`> - **阻断**：触发安全熔断保护，自动中继已暂停，等待你确认处理方式${evExtra}`);
   } else if (hasEnvRestart) {
-    detailLine = `> ${st.environmentRestart.message}`;
+    bodyLines.push(`> - **提醒**：${st.environmentRestart.message}`);
   } else if (hasUnconsumed) {
     const first = unconsumedPushes[0];
-    const extraTxt = unconsumedPushes.length > 1 ? `（另有 ${unconsumedPushes.length - 1} 个会话待唤醒）` : '';
-    detailLine = `> ${first.message}${extraTxt}`;
+    const extraTxt = unconsumedPushes.length > 1 ? ` ｜ 另有 ${unconsumedPushes.length - 1} 个会话待唤醒` : '';
+    bodyLines.push(`> - **提醒**：${first.message}${extraTxt}`);
   } else if (hasPendingEvents) {
     const latestEv = pendingEvents[pendingEvents.length - 1];
     const roleCn = formatRoleLabelCn(latestEv.role || 'ab');
     const typeCn = formatEventTypeCn(latestEv.type);
-    const taskPart = latestEv.task ? `（任务 \`${latestEv.task}\`）` : '';
+    const taskPart = latestEv.task ? ` ｜ 任务 \`${latestEv.task}\`` : '';
     const msgPart = latestEv.message ? `：${latestEv.message}` : '';
-    const morePart = pendingEvents.length > 1 ? `（共 ${pendingEvents.length} 条待确认）` : '';
-    detailLine = `> 收到 \`${roleCn}\` 发出的「${typeCn}」信号${taskPart}${msgPart}${morePart}，请总控及时核查并确认。`;
+    const morePart = pendingEvents.length > 1 ? ` ｜ 共 ${pendingEvents.length} 条待确认` : '';
+    bodyLines.push(`> - **信号**：\`${roleCn}\` 发出「${typeCn}」${taskPart}${msgPart}${morePart}，请总控核查确认`);
   } else if (hasAudit) {
-    const auditTimer = st.activeStageTimer?.elapsedCn ? `，当前已耗时 ${st.activeStageTimer.elapsedCn}` : '';
-    detailLine = `> 独立审计专员正在隔离核验 \`${st.activeCrossAgent.taskId}\`（代码仓保持只读未改动${auditTimer}），完成后自动回传总控，无需你操作。`;
+    const auditTimer = st.activeStageTimer?.elapsedCn ? ` ｜ 已耗时 ${st.activeStageTimer.elapsedCn}` : '';
+    bodyLines.push(`> - **实况**：独立审计专员正在隔离核验 \`${st.activeCrossAgent.taskId}\`（主仓保持只读${auditTimer}），完成后自动回传总控`);
   } else if (hasHandoff) {
-    detailLine = `> 检测到 \`${st.pendingCrossAgent.length}\` 项跨端待转交任务，正在自动安排独立审计专员接手。`;
+    bodyLines.push(`> - **实况**：检测到 \`${st.pendingCrossAgent.length}\` 项跨端待转交任务，正在自动安排独立审计专员接手`);
   } else if (hasWorktrees) {
     const wtParts = st.worktrees.map((wt) => {
-      const label = wt.role ? formatRoleLabelCn(wt.role) : `${wt.id.toUpperCase()} 线`;
-      if (!wt.exists) return `\`${label}\`（目录缺失）`;
+      const labelTxt = wt.role ? formatRoleLabelCn(wt.role) : `${wt.id.toUpperCase()} 线`;
+      if (!wt.exists) return `\`${labelTxt}\` 目录缺失`;
       const rInfo = wt.role ? st.roles?.[wt.role] : null;
       const activeTxt = rInfo && rInfo.idleSeconds !== null && rInfo.idleSeconds !== undefined
-        ? `活跃于 ${formatDurationCn(rInfo.idleSeconds)}前，`
+        ? `${formatDurationCn(rInfo.idleSeconds)}前活跃 · `
         : '';
       const dirtyTxt = wt.dirtyCount > 0 ? `改动 ${wt.dirtyCount} 个文件` : '工作区干净';
-      return `\`${label}\`（${activeTxt}${dirtyTxt}）`;
+      return `\`${labelTxt}\`（${activeTxt}${dirtyTxt}）`;
     });
-    const tailTxt = hasWorking ? '正常运行，继续值守。' : '当前无新写入，正在核对是否待推进。';
-    detailLine = `> ${wtParts.join(' · ')}，${tailTxt}`;
+    const tailTxt = hasWorking ? '运行正常，继续值守' : '暂无新写入，核对是否待推进';
+    bodyLines.push(`> - **实况**：${wtParts.join(' ｜ ')} ｜ ${tailTxt}`);
   } else {
     const dirtyNum = st.git?.dirtyCount;
     const dirtyTxt = dirtyNum === null || dirtyNum === undefined
       ? '工作区状态未知'
-      : (dirtyNum === 0 ? '当前工作区干净' : `当前工作区改动 ${dirtyNum} 个文件`);
+      : (dirtyNum === 0 ? '工作区干净' : `改动 ${dirtyNum} 个文件`);
     const targetList = workerEntries.length > 0 ? workerEntries : allLive.slice(0, 2);
     if (targetList.length > 0) {
       const roleSummaries = targetList.map(([name, info]) => {
-        const label = formatRoleLabelCn(name);
+        const labelTxt = formatRoleLabelCn(name);
         const dur = formatDurationCn(info.idleSeconds);
         return info.status === 'WORKING'
-          ? `\`${label}\` 活跃（${dur}前有输出）`
-          : `\`${label}\` 已静默 ${dur}`;
+          ? `\`${labelTxt}\` 活跃（${dur}前有输出）`
+          : `\`${labelTxt}\` 已静默 ${dur}`;
       });
-      const tailTxt = hasWorking ? '一切正常，继续值守。' : '正在核对是否已完工或需要唤醒。';
-      detailLine = `> ${roleSummaries.join(' · ')}，${dirtyTxt}，${tailTxt}`;
+      const tailTxt = hasWorking ? '运行正常，继续值守' : '核对是否已完工或需唤醒';
+      bodyLines.push(`> - **实况**：${roleSummaries.join(' ｜ ')} ｜ ${dirtyTxt} ｜ ${tailTxt}`);
     } else {
-      detailLine = `> 暂未绑定执行会话（${dirtyTxt}），等待绑定或启动会话。`;
+      bodyLines.push(`> - **实况**：暂未绑定执行会话 ｜ ${dirtyTxt} ｜ 等待绑定或启动会话`);
     }
   }
 
-  return `${headerLine}\n>\n${detailLine}`;
+  return `${headerLine}\n>\n${bodyLines.join('\n')}`;
 }
 
 function resolveActiveStageTimer(pipeline, state) {
@@ -2091,23 +2113,25 @@ function cmdRender(flags, kindRaw) {
       console.log(st.telemetryLine);
       return;
     }
-    const progPart = pipeline && pipeline !== '-' ? `进度 ${pipeline}` : `批次 \`${batch}\``;
+    const lines = [];
     if (activity) {
       const titleLine = st?.activeCrossAgent
-        ? `> ◐ **独立审计进行中** · \`${ts}\` · \`${batch}\` · ${progPart}`
-        : `> ● **研发推进中** · \`${ts}\` · \`${batch}\` · ${progPart}`;
-      console.log(`${titleLine}\n>\n> ${activity}`);
+        ? `> 🔍 **${ts} 独立审计进行中** ｜ \`${batch}\``
+        : `> ⏱️ **${ts} 研发推进中** ｜ \`${batch}\``;
+      lines.push(titleLine, '>');
+      if (pipeline && pipeline !== '-') lines.push(`> - **进度**：${pipeline}`);
+      lines.push(`> - **实况**：${activity}`);
+      console.log(lines.join('\n'));
       return;
     }
     const roleLabel = formatRoleLabelCn(flags.role || 'ab');
     const dur = formatDurationCn(flags.idle ?? 0);
     const dirtyNum = Number(flags.dirty ?? 0);
-    const dirtyTxt = !Number.isNaN(dirtyNum) && dirtyNum === 0 ? '工作区干净' : `当前工作区改动 ${flags.dirty ?? 0} 个文件`;
-    console.log([
-      `> ● **研发推进中** · \`${ts}\` · ${progPart}`,
-      '>',
-      `> \`${roleLabel}\` 活跃（${dur}前有输出），${dirtyTxt}，一切正常，继续值守。`,
-    ].join('\n'));
+    const dirtyTxt = !Number.isNaN(dirtyNum) && dirtyNum === 0 ? '工作区干净' : `改动 ${flags.dirty ?? 0} 个文件`;
+    lines.push(`> ⏱️ **${ts} 研发推进中** ｜ \`${batch}\``, '>');
+    if (pipeline && pipeline !== '-') lines.push(`> - **进度**：${pipeline}`);
+    lines.push(`> - **实况**：\`${roleLabel}\` 活跃（${dur}前有输出） ｜ ${dirtyTxt} ｜ 运行正常，继续值守`);
+    console.log(lines.join('\n'));
     return;
   }
 
@@ -2119,9 +2143,10 @@ function cmdRender(flags, kindRaw) {
     const exitCode = String(flags.exit ?? '0');
     const statusTxt = exitCode === '0' ? '投递成功' : `投递失败（退出码 ${exitCode}）`;
     console.log([
-      `> ▲ **已自动唤醒推进** · \`${ts}\` · 任务 \`${task}\``,
+      `> ⏰ **${ts} 已自动唤醒推进** ｜ 任务 \`${task}\``,
       '>',
-      `> \`${roleLabel}\` 已静默 ${dur}，已自动发送续推指令（${statusTxt}），等待恢复执行。`,
+      `> - **对象**：\`${roleLabel}\`（已静默 ${dur}）`,
+      `> - **结果**：续推指令${statusTxt}，等待会话恢复执行`,
     ].join('\n'));
     return;
   }
@@ -2129,15 +2154,19 @@ function cmdRender(flags, kindRaw) {
   if (kind === 'milestone') {
     const task = flags.task || 'T-01-R0';
     const verdictRaw = String(flags.verdict || '通过').trim();
+    let verdictIcon = '📌';
     let verdictTitle = '审核完成';
     let verdictCell = verdictRaw;
     if (/通过|PASS/i.test(verdictRaw)) {
+      verdictIcon = '🏁';
       verdictTitle = '审核通过';
       verdictCell = '审核通过';
     } else if (/整改|REWORK/i.test(verdictRaw)) {
+      verdictIcon = '🛠️';
       verdictTitle = '需要返修';
       verdictCell = '需要返修';
     } else if (/阻塞|BLOCKED/i.test(verdictRaw)) {
+      verdictIcon = '🚧';
       verdictTitle = '遇到阻塞';
       verdictCell = '遇到阻塞';
     }
@@ -2150,9 +2179,9 @@ function cmdRender(flags, kindRaw) {
     const next = flags.next || '总控中枢核收后按流水线自动推进下一步';
     const modeCn = /SEMI/i.test(mode) ? '半自动' : '全自动';
     console.log([
-      `> ◆ **阶段里程碑 · \`${task}\` ${verdictTitle}**（${gate}）`,
+      `> ${verdictIcon} **阶段里程碑 · \`${task}\` ${verdictTitle}**（${gate}）`,
       '>',
-      `> 当前进度：${pipeline} ｜ 托管模式：${modeCn}`,
+      `> - **进度**：${pipeline} ｜ **托管模式**：${modeCn}`,
       '',
       '| 核验结论 | 问题统计 | 审计报告与代码快照 | 接下来的自动动作 |',
       '| :--- | :--- | :--- | :--- |',
@@ -2169,7 +2198,7 @@ function cmdRender(flags, kindRaw) {
     const options = flags.options || '① 批准追加修复轮次；② 发起 Spec 变更；③ 人工接管';
     console.log([
       '> [!CAUTION]',
-      `> **■ 自动推进已暂停 · 任务 \`${task}\` 需要你拍板**`,
+      `> 🛑 **自动推进已暂停 · 任务 \`${task}\` 需要你拍板**`,
       '>',
       `> - **暂停原因**：${reason}`,
       `> - **当前现场**：代码版本 \`${sha8}\` · 审计报告 \`${report}\``,
@@ -2198,9 +2227,9 @@ function cmdRender(flags, kindRaw) {
     }
     console.log([
       '> [!TIP]',
-      `> **✓ 全部阶段已完成 · \`${batch}\` 独立审计闭环**`,
+      `> 🎉 **全部阶段已完成 · \`${batch}\` 独立审计闭环**`,
       '>',
-      `> 完成进度：${pipeline} ｜ 自动巡检已停止 ｜ 关机倒计时：${countdown}`,
+      `> - **完成进度**：${pipeline} ｜ **自动巡检**：已停止 ｜ **关机倒计时**：${countdown}`,
       '',
       '| 阶段 | 最终代码版本 | 返修次数 | 独立审计报告 | 结论 |',
       '| :--- | :---: | :---: | :--- | :---: |',
@@ -3434,6 +3463,7 @@ function renderCockpitHtml(payload, live = false) {
 
       const cleanTelemetry = String(st.telemetryLine || '暂无态势')
         .replace(/^>\\s?$/gm, '')
+        .replace(/^>\\s?-\\s?/gm, '')
         .replace(/^>\\s?/gm, '')
         .replace(/\\n{2,}/g, '\\n')
         .replace(/\\*\\*/g, '')
@@ -3445,8 +3475,8 @@ function renderCockpitHtml(payload, live = false) {
       document.getElementById('pipeline-flow').innerHTML = stages.length
         ? stages.map((s) => {
             const cls = s.status === 'done' ? 'stage-done' : (s.status === 'active' ? 'stage-active' : (s.status === 'blocked' ? 'stage-blocked' : ''));
-            const icon = s.status === 'done' ? '✓' : (s.status === 'active' ? '▸' : (s.status === 'blocked' ? '!' : '◌'));
-            return '<span class="stage-chip ' + cls + '">' + esc(s.stage) + ' ' + icon + '</span>';
+            const icon = s.status === 'done' ? '✅' : (s.status === 'active' ? '🔄' : (s.status === 'blocked' ? '⛔' : '⬜'));
+            return '<span class="stage-chip ' + cls + '">' + icon + ' ' + esc(s.stage) + '</span>';
           }).join('')
         : '<span class="muted">暂无流水线阶段记录</span>';
 

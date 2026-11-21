@@ -88,7 +88,7 @@ description: >-
 
 1. **采集双端元数据、运行环境健康与事件/波次状态**：
    - 在目标项目目录下直接运行 `node "...\scripts\relay.mjs" status --json`（或显式传 `--project` / `--config`）；自动完成以下「防假死三件套」与全量态势探测：
-     - **WSL / 宿主环境重启感知（`environmentRestart`）**：探测环境运行时间与启动 ID，一旦发现刚重启过（`detected && !acknowledged`），`telemetryLine` 会最高优先展示 `▲ **检测到运行环境刚重启**`，第一时间提醒用户把 `Codex-Hub` 与 `AB` 两个窗口都点活一次再推进（处理后可执行 `relay.mjs state ack-alert --kind restart` 消警）；
+     - **WSL / 宿主环境重启感知（`environmentRestart`）**：探测环境运行时间与启动 ID，一旦发现刚重启过（`detected && !acknowledged`），`telemetryLine` 会最高优先展示 `🔄 **HH:MM 检测到运行环境刚重启**`，第一时间提醒用户把 `Codex-Hub` 与 `AB` 两个窗口都点活一次再推进（处理后可执行 `relay.mjs state ack-alert --kind restart` 消警）；
      - **投递未消费回声验收（`unconsumedPushes`）**：向 Codex 推完消息（尤其返回 `could not resume thread` 时）若过 1 个巡检周期（默认 180 秒）仍无新写入，`telemetryLine` 立即提醒「消息已入队但 `<会话名>` 疑似未挂载/未唤醒，请切过去点一下」（用户点活或确认后可用 `relay.mjs state ack-alert --kind unconsumed --role <role>` 消警）；
      - **波次、事件与预算**：自动解析 `waves`、`pendingEvents`（优先核查后 `event ack`）、`stageTimers`、`contextBudgets`（超限执行 `compact --apply`）、多 `git worktree` 及自定义角色名；
    - 需要向用户提供可视化全景看板时，可运行 `relay.mjs ui --export <file.html>` 导出零外链离线中文驾驶舱网页，或运行 `relay.mjs ui --port 4317` 启动本地实时服务；
@@ -119,14 +119,14 @@ description: >-
 
 ### §4.1 人话驾驶舱标准化输出规范（全设备统一易懂视效）
 
-为了保证不同设备与项目巡检输出**让人一眼看懂当前在干什么**，一律采用清晰几何徽章（`●`/`◐`/`◆`/`▲`/`■`/`✓`）与自然中文状态卡片（由 `relay.mjs` 原生渲染，且**标题行与正文行之间必须留空引用行 `>` 防止 Markdown 渲染粘连**）。**严禁直接对用户吐出 `R0#hex`、`HEAD`、`Δ`、`Hold`、`Wait` 或纯英文状态代码等机械黑话**：
+为了保证不同设备与项目巡检输出**让人一眼看懂当前在干什么**，一律由 `relay.mjs` 原生渲染彩色语义图标（`⏱️`/`⚡`/`🔍`/`🔔`/`📨`/`⏰`/`⚠️`/`🔄`/`⏳`/`💤`/`🏁`/`🛠️`/`🚧`/`🛑`/`🎉` 与进度 `✅`/`🔄`/`⛔`/`⬜`）+ 结构化中文要点卡片（标题行 + 空引用行 `>` + `- **进度**：` / `- **实况**：`）。**严禁使用黑白几何点（`●`/`◐`/`◆`/`▲`/`■`/`◌`/`▸`/`▶`），严禁对用户吐出 `R0#hex`、`HEAD`、`Δ`、`Hold`、`Wait` 或纯英文状态代码等机械黑话**：
 
 | 场景 | 触发时机 | 必须采用的输出方式（见 [ROLE_PROMPTS.md](./references/ROLE_PROMPTS.md#九人话驾驶舱标准化输出模板中继主会话直接复用)） |
 | :--- | :--- | :--- |
-| **高频静默心跳** | 每 3 分钟巡检无增量或仅需静默等待时 | 直接输出 `relay.mjs status --compact` 或 `render heartbeat --activity "..."` 生成的 **2 行人话状态卡**（中文状态标题 + 阶段进度箭头 + 谁在做什么、改动几个文件、需不需要人管）。 |
-| **停滞唤醒提示** | 触发规则 a–d `send` 后 | 运行 `relay.mjs render nudge ...` 输出 **2 行 `▲ 已自动唤醒推进`** 确认，写明静默时长与投递结果。 |
-| **阶段里程碑卡** | `R0` 出裁定 / 解锁下一阶段 / 新阶段正式开工时 | 运行 `relay.mjs render milestone ...` 输出 **4 列人话里程碑表**（核验结论、展开后的中文问题统计、审计报告与代码快照、接下来的自动动作）。 |
-| **熔断与终局卡** | 触达 `maxFixRounds` / 阻塞 或 全批通关收官 | 运行 `relay.mjs render breaker` 或 `render complete` 输出高亮 Callout 块与终局汇总表。 |
+| **高频静默心跳** | 定时巡检无增量或仅需静默等待时 | 直接输出 `relay.mjs status --compact` 或 `render heartbeat --activity "..."` 生成的结构化彩色状态卡（带时间、`⏱️` 图标、进度条与简洁 `｜` 分隔实况）。 |
+| **停滞唤醒提示** | 触发规则 a–d `send` 后 | 运行 `relay.mjs render nudge ...` 输出 **`⏰ 已自动唤醒推进`** 卡片，列出对象静默时长与投递结果。 |
+| **阶段里程碑卡** | `R0` 出裁定 / 解锁下一阶段 / 新阶段正式开工时 | 运行 `relay.mjs render milestone ...` 输出 **`🏁` / `🛠️` / `🚧` 阶段里程碑表**（核验结论、展开后的中文问题统计、审计报告与代码快照、接下来的自动动作）。 |
+| **熔断与终局卡** | 触达 `maxFixRounds` / 阻塞 或 全批通关收官 | 运行 `relay.mjs render breaker`（`🛑`）或 `render complete`（`🎉`）输出高亮 Callout 块与终局汇总表。 |
 
 ---
 

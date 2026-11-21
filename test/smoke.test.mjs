@@ -268,25 +268,31 @@ test('v1.2.0 human-readable Chinese cockpit output, render subcommands, custom r
 
     const nudgeRes = runNode([CLI_PATH, 'render', 'nudge', '--project', mainRepo, '--role', 'a', '--task', 'T-01', '--idle', '210', '--file', 'msg-a-001.txt', '--exit', '0']);
     assert.equal(nudgeRes.status, 0, nudgeRes.stderr);
-    assert.match(nudgeRes.stdout, /▲ \*\*已自动唤醒推进\*\*/);
+    assert.match(nudgeRes.stdout, /⏰ \*\*\d{2}:\d{2} 已自动唤醒推进\*\*/);
     assert.match(nudgeRes.stdout, /3 分 30 秒/);
     assert.match(nudgeRes.stdout, /投递成功/);
+    assert.equal(/[●◐◆▲■◌▸▶]/.test(nudgeRes.stdout), false);
 
     const msRes = runNode([CLI_PATH, 'render', 'milestone', '--project', mainRepo, '--task', 'T-01-R0', '--verdict', '通过', '--gate', 'T-02 已解锁', '--sha', '1234567890abcdef', '--parent', '0000000011111111', '--report', 'T-01-R0-review.md', '--sha256', 'deadbeefcafebabe', '--counts', '0 / 0 / 0 / 1 / 2']);
     assert.equal(msRes.status, 0, msRes.stderr);
-    assert.match(msRes.stdout, /◆ \*\*阶段里程碑/);
+    assert.match(msRes.stdout, /🏁 \*\*阶段里程碑/);
     assert.match(msRes.stdout, /审核通过/);
     assert.match(msRes.stdout, /阻断 0 · 高危 0 · 中危 0 · 低危 1 · 建议 2/);
+    assert.equal(/[●◐◆▲■◌▸▶]/.test(msRes.stdout), false);
 
     const brRes = runNode([CLI_PATH, 'render', 'breaker', '--project', mainRepo, '--task', 'T-01-FIX2-R0', '--reason', 'maxFixRounds reached']);
     assert.equal(brRes.status, 0, brRes.stderr);
-    assert.match(brRes.stdout, /■ 自动推进已暂停/);
+    assert.match(brRes.stdout, /🛑 \*\*自动推进已暂停/);
+    assert.equal(/[●◐◆▲■◌▸▶]/.test(brRes.stdout), false);
 
     const compRes = runNode([CLI_PATH, 'render', 'complete', '--project', mainRepo, '--stages', 'T-01:12345678:1:T-01-FIX1-R0-review.md:abcd1234:PASS', '--countdown', '120']);
     assert.equal(compRes.status, 0, compRes.stderr);
-    assert.match(compRes.stdout, /✓ 全部阶段已完成/);
+    assert.match(compRes.stdout, /🎉 \*\*全部阶段已完成/);
     assert.match(compRes.stdout, /T-01-FIX1-R0-review\.md/);
     assert.match(compRes.stdout, /120 秒后自动关机/);
+    assert.equal(/[●◐◆▲■◌▸▶]/.test(compRes.stdout), false);
+    assert.equal(/[●◐◆▲■◌▸▶]/.test(st.telemetryLine), false);
+    assert.equal(/[●◐◆▲■◌▸▶]/.test(hbActRes.stdout), false);
   } finally {
     try {
       runGitCmd(mainRepo, ['worktree', 'remove', '--force', wtA]);
@@ -426,8 +432,9 @@ test('v1.3.0 Golden Triangle: waves, analyze, event bus, stageTimers, compact ar
 
     const evStatus = JSON.parse(runNode([CLI_PATH, 'status', '--project', tmp, '--json']).stdout);
     assert.equal(evStatus.pendingEvents.length, 1);
-    assert.match(evStatus.telemetryLine, /◆ \*\*收到事件信号\*\*/);
+    assert.match(evStatus.telemetryLine, /🔔 \*\*\d{2}:\d{2} 收到事件信号\*\*/);
     assert.match(evStatus.telemetryLine, /已耗时/);
+    assert.equal(/[●◐◆▲■◌▸▶]/.test(evStatus.telemetryLine), false);
     assert.equal(/(?:\bHold\b|\bWait\b|\bHEAD\b|Δ|R0#)/.test(evStatus.telemetryLine), false);
     assert.ok(evStatus.stageTimers['T-02'], 'Expected stageTimers entry for T-02');
 
@@ -529,34 +536,41 @@ test('v1.3.1 bugfixes: blockquote blank-line spacing and ppid orphan process det
     const initRes = runNode([CLI_PATH, 'init', '--project', tmp, '--runtime', 'windows', '--name', 'ProcApp', '--batch', 'PKG-PROC-01']);
     assert.equal(initRes.status, 0, initRes.stderr);
 
-    // 1. Verify blockquote cards always separate header and detail lines with an empty '>' line
+    // 1. Verify blockquote cards always separate header and detail lines with an empty '>' line and use zero monochrome dots
     const compactRes = runNode([CLI_PATH, 'status', '--project', tmp, '--compact']);
     assert.equal(compactRes.status, 0, compactRes.stderr);
     assert.match(compactRes.stdout, /\r?\n>\r?\n>/, 'status --compact must include empty blockquote separator line');
+    assert.equal(/[●◐◆▲■◌▸▶]/.test(compactRes.stdout), false);
 
     const hbDefault = runNode([CLI_PATH, 'render', 'heartbeat', '--project', tmp, '--activity', '正在检查血缘']);
     assert.equal(hbDefault.status, 0, hbDefault.stderr);
     assert.match(hbDefault.stdout, /\r?\n>\r?\n>/);
+    assert.equal(/[●◐◆▲■◌▸▶]/.test(hbDefault.stdout), false);
 
     const hbStandalone = runNode([CLI_PATH, 'render', 'heartbeat', '--role', 'ab', '--idle', '12', '--dirty', '2']);
     assert.equal(hbStandalone.status, 0, hbStandalone.stderr);
     assert.match(hbStandalone.stdout, /\r?\n>\r?\n>/);
+    assert.equal(/[●◐◆▲■◌▸▶]/.test(hbStandalone.stdout), false);
 
     const nudgeRes = runNode([CLI_PATH, 'render', 'nudge', '--project', tmp, '--task', 'T-01', '--idle', '190']);
     assert.equal(nudgeRes.status, 0, nudgeRes.stderr);
     assert.match(nudgeRes.stdout, /\r?\n>\r?\n>/);
+    assert.equal(/[●◐◆▲■◌▸▶]/.test(nudgeRes.stdout), false);
 
     const msRes = runNode([CLI_PATH, 'render', 'milestone', '--project', tmp, '--task', 'T-01-R0', '--verdict', '通过']);
     assert.equal(msRes.status, 0, msRes.stderr);
     assert.match(msRes.stdout, /\r?\n>\r?\n>/);
+    assert.equal(/[●◐◆▲■◌▸▶]/.test(msRes.stdout), false);
 
     const brRes = runNode([CLI_PATH, 'render', 'breaker', '--project', tmp, '--task', 'T-01-FIX2-R0']);
     assert.equal(brRes.status, 0, brRes.stderr);
     assert.match(brRes.stdout, /\r?\n>\r?\n> - \*\*暂停原因\*\*/);
+    assert.equal(/[●◐◆▲■◌▸▶]/.test(brRes.stdout), false);
 
     const compRes = runNode([CLI_PATH, 'render', 'complete', '--project', tmp]);
     assert.equal(compRes.status, 0, compRes.stderr);
-    assert.match(compRes.stdout, /\r?\n>\r?\n> 完成进度：/);
+    assert.match(compRes.stdout, /\r?\n>\r?\n> - \*\*完成进度\*\*：/);
+    assert.equal(/[●◐◆▲■◌▸▶]/.test(compRes.stdout), false);
 
     // 2. Orphan worker snapshot: codex host is dead; cargo test ppid=1 and spawned capture-worker.js ppid=2001
     const orphanSnap = path.join(tmp, 'ps-orphan.txt');
@@ -678,10 +692,11 @@ test('v1.3.3 resilience: unconsumed push echo alert and runtime environment rest
     assert.equal(stUnconsumed.unconsumedPushes.length, 1);
     assert.equal(stUnconsumed.unconsumedPushes[0].role, 'ab');
     assert.equal(stUnconsumed.unconsumedPushes[0].couldNotResume, true);
-    assert.match(stUnconsumed.telemetryLine, /▲ \*\*投递消息疑似未消费\*\*/);
+    assert.match(stUnconsumed.telemetryLine, /⚠️ \*\*\d{2}:\d{2} 投递消息疑似未消费\*\*/);
     assert.match(stUnconsumed.telemetryLine, /疑似未挂载\/未唤醒/);
     assert.match(stUnconsumed.telemetryLine, /could not resume thread/);
     assert.match(stUnconsumed.telemetryLine, /\r?\n>\r?\n>/);
+    assert.equal(/[●◐◆▲■◌▸▶]/.test(stUnconsumed.telemetryLine), false);
 
     const ackUnconsumed = JSON.parse(runNode([CLI_PATH, 'state', 'ack-alert', '--project', tmp, '--kind', 'unconsumed', '--role', 'ab']).stdout);
     assert.equal(ackUnconsumed.ok, true);
@@ -703,9 +718,10 @@ test('v1.3.3 resilience: unconsumed push echo alert and runtime environment rest
     const stRestart = JSON.parse(runNode([CLI_PATH, 'status', '--project', tmp, '--json']).stdout);
     assert.equal(stRestart.environmentRestart.detected, true);
     assert.equal(stRestart.environmentRestart.acknowledged, false);
-    assert.match(stRestart.telemetryLine, /▲ \*\*检测到运行环境刚重启\*\*/);
+    assert.match(stRestart.telemetryLine, /🔄 \*\*\d{2}:\d{2} 检测到运行环境刚重启\*\*/);
     assert.match(stRestart.telemetryLine, /点活/);
     assert.match(stRestart.telemetryLine, /\r?\n>\r?\n>/);
+    assert.equal(/[●◐◆▲■◌▸▶]/.test(stRestart.telemetryLine), false);
 
     const ackRestart = JSON.parse(runNode([CLI_PATH, 'state', 'ack-alert', '--project', tmp, '--kind', 'restart']).stdout);
     assert.equal(ackRestart.ok, true);
@@ -713,7 +729,7 @@ test('v1.3.3 resilience: unconsumed push echo alert and runtime environment rest
 
     const stAfterRestartAck = JSON.parse(runNode([CLI_PATH, 'status', '--project', tmp, '--json']).stdout);
     assert.equal(stAfterRestartAck.environmentRestart.acknowledged, true);
-    assert.equal(/▲ \*\*检测到运行环境刚重启\*\*/.test(stAfterRestartAck.telemetryLine), false);
+    assert.equal(/检测到运行环境刚重启/.test(stAfterRestartAck.telemetryLine), false);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

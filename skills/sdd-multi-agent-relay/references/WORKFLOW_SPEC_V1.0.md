@@ -162,8 +162,8 @@ flowchart TD
 | **规则 d（双停且指向不明）** | `AB` 与 `HUB` 均停且看板状态模糊/疑有隐性阻塞 | 推 `HUB` 核对看板继续派发或明确写明阻塞原因与责任方 |
 | **规则 e（单方工作中静默）** | 任一方处于运行中（`idle_seconds < 180`） | 保持安静不打扰，仅在规则 a（`AB` 自身停于未完成任务且正在等待之外）例外 |
 | **后台长命令与孤儿进程甄别（`ppid` 溯源）** | 怀疑 `STOPPED` 会话仍在跑编译/测试子进程 | 必须运行 `relay.mjs procs --json`（或 `status --check-procs`）沿 `ppid` 溯源：仅当 `hasActiveCodexWorker=true`（仍挂在存活 `codex` 宿主下）才暂缓唤醒；孤儿进程（父 `codex` 已死、挂至 `PID 1`）不得阻断防停唤醒 |
-| **投递未消费回声验收（1 周期告警）** | 推完消息（尤其含 `could not resume thread`）满 `pollIntervalSec` 后目标线程仍无新写入 | 在 `status` 与 `telemetryLine` 立即输出 `▲ **投递消息疑似未消费**` 明确提醒用户切过去点活对应会话，不再默默空等；处理后可 `state ack-alert --kind unconsumed` 消警 |
-| **WSL / 宿主环境重启感知** | 探测到 `boot_id` 变化或运行时间 `uptime` 缩短回退 | 第一时间输出 `▲ **检测到运行环境刚重启**` 提醒用户将 `Codex-Hub` 与 `AB` 窗口点活；全部绑定角色产生新写入后自动消警（或手动 `state ack-alert --kind restart`） |
+| **投递未消费回声验收（1 周期告警）** | 推完消息（尤其含 `could not resume thread`）满 `pollIntervalSec` 后目标线程仍无新写入 | 在 `status` 与 `telemetryLine` 立即输出 `⚠️ **HH:MM 投递消息疑似未消费**` 明确提醒用户切过去点活对应会话，不再默默空等；处理后可 `state ack-alert --kind unconsumed` 消警 |
+| **WSL / 宿主环境重启感知** | 探测到 `boot_id` 变化或运行时间 `uptime` 缩短回退 | 第一时间输出 `🔄 **HH:MM 检测到运行环境刚重启**` 提醒用户将 `Codex-Hub` 与 `AB` 窗口点活；全部绑定角色产生新写入后自动消警（或手动 `state ack-alert --kind restart`） |
 
 ---
 
@@ -172,5 +172,5 @@ flowchart TD
 1. **防漂移开工前体检（`relay.mjs analyze`）**：派单开工前执行只读体检，拦截缺失 `V-xx`、未拍板 `PD-xx`、看板重号、缺失 `[T-xx]`、断链文件、超上下文预算与未解除熔断（发现阻断错误即返回非 `0` 退出码），并在 `runtime="wsl"` 下自动检测 `/mnt/<drive>/` 跨盘 9P/DrvFS 高频 I/O 风险（`WSL_DRVFS_IO_RISK`）；配合 `cli.mjs doctor` 自动核查 Windows 动态短端口池容量与 `.wslconfig` `mirrored` 冲突风险。
 2. **波次并行与多 Worktree 调度（Wave）**：看板任务总表通过 `波次/依赖` 列（`W0`、`W1`、`W2（依赖 T-01）`）声明可并行波次，`status` 自动汇总 `waves.currentWave` 与 `waves.parallelReady`，配合多 `git worktree` 让无依赖子任务并发推进。
 3. **上下文预算监控与日志归档（`relay.mjs compact`）**：按 `contextBudgets`（默认 `stateMaxLines: 120`、`boardMaxLines: 160`、`taskCardMaxLines: 250`）持续监控协作文档膨胀，支持 `--dry-run` 预警与 `--apply` 将超长历史调度日志安全归档至 `.agents/development/archive/` 并留 1 行索引。
-4. **零依赖事件信号总线与阶段耗时追踪（`relay.mjs event` & `stageTimers`）**：角色完工、阻塞或送审时可选向 `.agents/relay/events.jsonl` 发射结构化信号（`done`/`blocked`/`review_ready`/`heartbeat`/`decision_needed`），巡检人话卡片最高优先展示 `◆ **收到事件信号**` 并累计各阶段耗时。
+4. **零依赖事件信号总线与阶段耗时追踪（`relay.mjs event` & `stageTimers`）**：角色完工、阻塞或送审时可选向 `.agents/relay/events.jsonl` 发射结构化信号（`done`/`blocked`/`review_ready`/`heartbeat`/`decision_needed`），巡检人话卡片最高优先展示 `🔔 **HH:MM 收到事件信号**` 并累计各阶段耗时。
 5. **零依赖离线 HTML 驾驶舱（`relay.mjs ui`）**：支持 `--export <file.html>` 导出零外链单文件中文全景驾驶舱，或本地 `--port 4317` 启动每 5 秒轮询 `/api/status` 的实时网页。

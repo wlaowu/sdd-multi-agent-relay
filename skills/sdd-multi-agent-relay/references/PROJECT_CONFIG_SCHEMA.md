@@ -119,7 +119,7 @@ node relay.mjs status [--config <relay.json> | --project <dir>] [--compact] [--c
 ```powershell
 node relay.mjs render <heartbeat|nudge|milestone|breaker|complete> [--config <path> | --project <dir>] [--activity <text>] [options]
 ```
-- 直接生成人类一眼能看懂的中文 Markdown 卡片（2 行实时心跳、停滞唤醒 `▲ 已自动唤醒推进`、阶段里程碑 4 列表、熔断 `CAUTION` 与收官 `TIP` 汇总表），支持用 `--activity` 补充当前详细动作描述。
+- 直接生成人类一眼能看懂的彩色语义图标 + 结构化中文 Markdown 卡片（实时心跳 `⏱️` / `⚡` / `🔍`、停滞唤醒 `⏰ 已自动唤醒推进`、阶段里程碑 `🏁` / `🛠️` / `🚧` 4 列表、熔断 `🛑 CAUTION` 与收官 `🎉 TIP` 汇总表），支持用 `--activity` 补充当前详细动作描述。
 
 ### 7. `send` — 带防重与无进展保护的安全队列投递
 ```powershell
@@ -161,7 +161,7 @@ node relay.mjs event [--config <relay.json> | --project <dir>] list [--all] [--l
 node relay.mjs event [--config <relay.json> | --project <dir>] ack (--all | --id <eventId> | --task <id> | --role <role>)
 node relay.mjs event [--config <relay.json> | --project <dir>] clear [--all]
 ```
-- **行为**：将结构化信号写入 `.agents/relay/events.jsonl` 并联动更新 `stageTimers`；`status` 优先读取未确认 `pendingEvents` 并在 `telemetryLine` 置顶显示 `◆ **收到事件信号**`。
+- **行为**：将结构化信号写入 `.agents/relay/events.jsonl` 并联动更新 `stageTimers`；`status` 优先读取未确认 `pendingEvents` 并在 `telemetryLine` 展示 `🔔 **HH:MM 收到事件信号**`。
 
 ### 12. `compact` — 上下文预算监控与历史调度日志归档
 ```powershell
