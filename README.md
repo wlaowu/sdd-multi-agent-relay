@@ -31,23 +31,23 @@
 1. **方式 A1：`npx` 一键远程安装（Windows / macOS / Linux / WSL 通用）**
    ```bash
    # 私有仓库 HTTPS 方式（加 --with-codex 可顺带装入 ~/.codex/skills）：
-   npx -y git+https://github.com/<组织或用户名>/sdd-multi-agent-relay.git install --with-codex
+   npx -y git+https://github.com/wlaowu/sdd-multi-agent-relay.git install --with-codex
 
    # 若团队使用 SSH Key 访问私有仓库：
-   npx -y git+ssh://git@github.com/<组织或用户名>/sdd-multi-agent-relay.git install --with-codex
+   npx -y git+ssh://git@github.com/wlaowu/sdd-multi-agent-relay.git install --with-codex
    ```
    *(可选参数：`--mode skill` 仅装为全局 Skill；`--mode project` 仅装入当前项目 `.agents/skills/`；Windows 下附加 `--wsl-distro Debian` 可同时同步到 WSL 内的 Codex。)*
 
 2. **方式 A2：Antigravity 原生 CLI 直接安装**
    ```bash
-   agy plugin install https://github.com/<组织或用户名>/sdd-multi-agent-relay.git
+   agy plugin install https://github.com/wlaowu/sdd-multi-agent-relay.git
    ```
 
 3. **后续自检、一键升级与卸载**：
    ```bash
-   npx -y git+https://github.com/<组织或用户名>/sdd-multi-agent-relay.git doctor     # 自检安装与 Codex 连通状态
-   npx -y git+https://github.com/<组织或用户名>/sdd-multi-agent-relay.git update     # 一键更新到最新版
-   npx -y git+https://github.com/<组织或用户名>/sdd-multi-agent-relay.git uninstall  # 干净卸载
+   npx -y git+https://github.com/wlaowu/sdd-multi-agent-relay.git doctor     # 自检安装与 Codex 连通状态
+   npx -y git+https://github.com/wlaowu/sdd-multi-agent-relay.git update     # 一键更新到最新版
+   npx -y git+https://github.com/wlaowu/sdd-multi-agent-relay.git uninstall  # 干净卸载
    ```
 
 ---
@@ -59,7 +59,7 @@
 #### 方式 B1：Git Submodule + `.agents/plugins.json`（Antigravity 开箱即载，零额外命令）
 在任意业务仓库执行一次登记，提交进 Git：
 ```bash
-git submodule add https://github.com/<组织或用户名>/sdd-multi-agent-relay.git tools/sdd-relay
+git submodule add https://github.com/wlaowu/sdd-multi-agent-relay.git tools/sdd-relay
 ```
 在业务仓库新建 `.agents/plugins.json`：
 ```json
@@ -76,7 +76,7 @@ git submodule add https://github.com/<组织或用户名>/sdd-multi-agent-relay.
 ```json
 {
   "devDependencies": {
-    "sdd-multi-agent-relay": "git+ssh://git@github.com/<组织或用户名>/sdd-multi-agent-relay.git"
+    "sdd-multi-agent-relay": "git+ssh://git@github.com/wlaowu/sdd-multi-agent-relay.git"
   },
   "scripts": {
     "postinstall": "sdd-multi-agent-relay install --mode plugin --with-codex --quiet || true"
@@ -90,7 +90,7 @@ git submodule add https://github.com/<组织或用户名>/sdd-multi-agent-relay.
 ### 方案 C：一句话让 Antigravity 对话自己装好
 
 不习惯敲命令的同学，直接把下面这句话发给 Antigravity：
-> 「请从 Git 仓库 `https://github.com/<组织或用户名>/sdd-multi-agent-relay.git` 自动下载并运行 `node bin/cli.mjs install --mode plugin --with-codex` 安装到本地，然后跑 `doctor` 验证通过。」
+> 「请从 Git 仓库 `https://github.com/wlaowu/sdd-multi-agent-relay.git` 自动下载并运行 `node bin/cli.mjs install --mode plugin --with-codex` 安装到本地，然后跑 `doctor` 验证通过。」
 
 ---
 
