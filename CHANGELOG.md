@@ -1,5 +1,16 @@
 # 更新日志（CHANGELOG）
 
+## [1.2.0] - 2026-11-21
+
+### 人话驾驶舱输出全面优化（告别机械暗语）
+- **自然中文 2 行状态卡**：重写 `relay.mjs status --compact` 与 `buildTelemetryLine()`，去掉用户难懂的 `R0#hex`、`HEAD`、`Δ`、`Hold`、`Wait`、`idle_seconds` 等机器代码；改用直观中文标题 + `→` 阶段箭头 + 自然语言说明（如谁在活跃、几分几秒前有输出、改动几个文件、是否需要人管）。
+- **`render` 子命令人话升级**：
+  - `render heartbeat` 新增 `--activity <text>`，支持注入具体进度说明；
+  - `render nudge` 自动将静默秒数转成 `X 分 Y 秒` 并中文汇报投递结果；
+  - `render milestone` 自动将 `0 / 0 / 0 / 1 / 2` 展开为 `阻断 0 · 高危 0 · 中危 0 · 低危 1 · 建议 2`，并用人话列名展示下一步自动动作；
+  - `render breaker` / `render complete` 同步转为自然中文决策提示与验收表。
+- **规范同步**：同步更新 `SKILL.md`、`ROLE_PROMPTS.md` 与 `PROJECT_CONFIG_SCHEMA.md`，禁止对用户输出未经翻译的机械遥测暗语。
+
 ## [1.1.0] - 2026-11-21
 
 ### Ops-Cockpit 标准化输出与多 Worktree / 自定义角色支持

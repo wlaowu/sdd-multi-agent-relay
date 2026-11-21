@@ -215,7 +215,7 @@ function runGitCmd(cwd, args) {
   });
 }
 
-test('v1.1.0 Ops-Cockpit status --compact, render subcommands, custom roles, and multi-worktree telemetry work', () => {
+test('v1.2.0 human-readable Chinese cockpit output, render subcommands, custom roles, and multi-worktree telemetry work', () => {
   const tmp = makeTempDir('sdd-wt-test-');
   const mainRepo = path.join(tmp, 'main-repo');
   const wtA = path.join(tmp, 'wt-a');
@@ -255,30 +255,38 @@ test('v1.1.0 Ops-Cockpit status --compact, render subcommands, custom roles, and
     const wtEntry = st.worktrees.find((w) => w.role === 'a');
     assert.ok(wtEntry && wtEntry.exists && wtEntry.dirtyCount === 1, `Expected wt-a dirtyCount=1, got ${JSON.stringify(wtEntry)}`);
     assert.match(st.telemetryLine, /PKG-WT-01/);
-    assert.match(st.telemetryLine, /Δ1/);
+    assert.match(st.telemetryLine, /改动 1 个文件/);
+    assert.equal(/(?:\bHold\b|\bWait\b|Δ)/.test(st.telemetryLine), false, 'Human telemetry must not contain Hold/Wait/Delta jargon');
 
     const compactRes = runNode([CLI_PATH, 'status', '--project', mainRepo, '--compact']);
     assert.equal(compactRes.status, 0, compactRes.stderr);
-    assert.match(compactRes.stdout, /│/);
-    assert.match(compactRes.stdout, /Δ/);
+    assert.match(compactRes.stdout, /改动 1 个文件/);
+
+    const hbActRes = runNode([CLI_PATH, 'render', 'heartbeat', '--project', mainRepo, '--activity', '正在运行构建与验证']);
+    assert.equal(hbActRes.status, 0, hbActRes.stderr);
+    assert.match(hbActRes.stdout, /正在运行构建与验证/);
 
     const nudgeRes = runNode([CLI_PATH, 'render', 'nudge', '--project', mainRepo, '--role', 'a', '--task', 'T-01', '--idle', '210', '--file', 'msg-a-001.txt', '--exit', '0']);
     assert.equal(nudgeRes.status, 0, nudgeRes.stderr);
-    assert.match(nudgeRes.stdout, /▲ NUDGE/);
+    assert.match(nudgeRes.stdout, /▲ \*\*已自动唤醒推进\*\*/);
+    assert.match(nudgeRes.stdout, /3 分 30 秒/);
+    assert.match(nudgeRes.stdout, /投递成功/);
 
-    const msRes = runNode([CLI_PATH, 'render', 'milestone', '--project', mainRepo, '--task', 'T-01-R0', '--verdict', '通过', '--gate', 'T-02 Unlocked', '--sha', '1234567890abcdef', '--parent', '0000000011111111', '--report', 'T-01-R0-review.md', '--sha256', 'deadbeefcafebabe', '--counts', '0 / 0 / 0 / 1 / 2']);
+    const msRes = runNode([CLI_PATH, 'render', 'milestone', '--project', mainRepo, '--task', 'T-01-R0', '--verdict', '通过', '--gate', 'T-02 已解锁', '--sha', '1234567890abcdef', '--parent', '0000000011111111', '--report', 'T-01-R0-review.md', '--sha256', 'deadbeefcafebabe', '--counts', '0 / 0 / 0 / 1 / 2']);
     assert.equal(msRes.status, 0, msRes.stderr);
-    assert.match(msRes.stdout, /◆ MILESTONE/);
-    assert.match(msRes.stdout, /PASS/);
+    assert.match(msRes.stdout, /◆ \*\*阶段里程碑/);
+    assert.match(msRes.stdout, /审核通过/);
+    assert.match(msRes.stdout, /阻断 0 · 高危 0 · 中危 0 · 低危 1 · 建议 2/);
 
     const brRes = runNode([CLI_PATH, 'render', 'breaker', '--project', mainRepo, '--task', 'T-01-FIX2-R0', '--reason', 'maxFixRounds reached']);
     assert.equal(brRes.status, 0, brRes.stderr);
-    assert.match(brRes.stdout, /■ CIRCUIT BREAKER/);
+    assert.match(brRes.stdout, /■ 自动推进已暂停/);
 
     const compRes = runNode([CLI_PATH, 'render', 'complete', '--project', mainRepo, '--stages', 'T-01:12345678:1:T-01-FIX1-R0-review.md:abcd1234:PASS', '--countdown', '120']);
     assert.equal(compRes.status, 0, compRes.stderr);
-    assert.match(compRes.stdout, /✓ COMPLETED/);
+    assert.match(compRes.stdout, /✓ 全部阶段已完成/);
     assert.match(compRes.stdout, /T-01-FIX1-R0-review\.md/);
+    assert.match(compRes.stdout, /120 秒后自动关机/);
   } finally {
     try {
       runGitCmd(mainRepo, ['worktree', 'remove', '--force', wtA]);

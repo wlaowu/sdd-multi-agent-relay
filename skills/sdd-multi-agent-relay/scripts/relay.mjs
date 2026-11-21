@@ -105,13 +105,14 @@ Commands:
   status    Inspect Codex threads, worktrees, board, task cards, git state, and breakers
             Options: [--config <path> | --project <dir>] [--compact] [--json]
 
-  render    Render standardized Ops-Cockpit status blocks for Antigravity outputs
+  render    Render standardized human-readable cockpit status blocks for Antigravity outputs
             Subcommands: heartbeat | nudge | milestone | breaker | complete
             Options: [--config <path> | --project <dir>] [--task <id>] [--role <role>]
-                     [--idle <sec>] [--file <name>] [--exit <code>] [--verdict <v>]
-                     [--gate <text>] [--sha <sha>] [--parent <sha>] [--report <path>]
-                     [--sha256 <hash>] [--counts <0/0/0/0/0>] [--next <text>]
-                     [--reason <text>] [--options <text>] [--stages <spec>] [--countdown <sec>]
+                     [--idle <sec>] [--activity <text>] [--file <name>] [--exit <code>]
+                     [--verdict <v>] [--gate <text>] [--sha <sha>] [--parent <sha>]
+                     [--report <path>] [--sha256 <hash>] [--counts <0/0/0/0/0>]
+                     [--next <text>] [--reason <text>] [--options <text>]
+                     [--stages <spec>] [--countdown <sec>]
 
   send      Queue a message to a bound/matched Codex thread with progress guards
             Options: [--config <path> | --project <dir>] --role <role>
@@ -965,85 +966,117 @@ function parsePipelineSummary(boardTaskRows, state, activeCrossAgent) {
 
   return {
     stages: stages.map(({ stage, status }) => ({ stage, status })),
-    breadcrumb: plainParts.join(' · ') || '-',
-    markdownBreadcrumb: mdParts.join(' · ') || '',
+    breadcrumb: plainParts.join(' → ') || '-',
+    markdownBreadcrumb: mdParts.join(' → ') || '',
   };
 }
 
-function formatRoleIdleShort(info) {
-  if (!info || info.idleSeconds === null || info.idleSeconds === undefined) return '';
-  return `${info.idleSeconds}s`;
+function formatDurationCn(seconds) {
+  if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) return '-';
+  const s = Math.max(0, Math.round(Number(seconds)));
+  if (s < 60) return `${s} 秒`;
+  if (s < 3600) {
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    return rem > 0 ? `${m} 分 ${rem} 秒` : `${m} 分`;
+  }
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return `${h} 小时 ${m} 分`;
+}
+
+function formatRoleLabelCn(role) {
+  const key = String(role || '').trim().toLowerCase();
+  if (key === 'hub') return '总控中枢';
+  if (key === 'ab') return '实施专席 (AB)';
+  if (key === 'c') return '真机验证 (C)';
+  return `${key.toUpperCase()} 线`;
+}
+
+function formatCountsCn(raw) {
+  const parts = String(raw || '').split('/').map((x) => x.trim()).filter(Boolean);
+  if (parts.length === 5) {
+    return `阻断 ${parts[0]} · 高危 ${parts[1]} · 中危 ${parts[2]} · 低危 ${parts[3]} · 建议 ${parts[4]}`;
+  }
+  return String(raw || '-');
 }
 
 function buildTelemetryLine(st) {
   const roleEntries = Object.entries(st.roles || {});
   const workerEntries = roleEntries.filter(([name, info]) =>
     name !== 'hub' && (info.status === 'WORKING' || info.status === 'STOPPED'));
-  const activeWorkers = workerEntries.filter(([, info]) => info.status === 'WORKING');
   const allLive = roleEntries.filter(([, info]) => info.status === 'WORKING' || info.status === 'STOPPED');
   const hasBreaker = Boolean(st.breakers?.fixCapBreaker || (st.breakers?.noProgressRoles?.length || 0) > 0);
   const hasAudit = Boolean(st.activeCrossAgent);
   const hasHandoff = (st.pendingCrossAgent?.length || 0) > 0;
+  const hasWorktrees = Array.isArray(st.worktrees) && st.worktrees.length > 0;
+  const hasWorking = allLive.some(([, info]) => info.status === 'WORKING');
 
-  let badge = '`◌ STANDBY`';
-  if (hasBreaker) badge = '`■ BREAKER`';
-  else if (hasAudit) badge = '`◐ AUDIT`';
-  else if (hasHandoff) badge = '`◆ HANDOFF`';
-  else if (allLive.some(([, info]) => info.status === 'WORKING')) badge = '`● RELAY`';
-  else if (allLive.length > 0) badge = '`▲ IDLE`';
+  let title = '◌ **待命观察中**';
+  if (hasBreaker) title = '■ **自动推进已暂停**';
+  else if (hasAudit) title = '◐ **独立审计进行中**';
+  else if (hasHandoff) title = '◆ **发现待转交任务**';
+  else if (hasWorking && hasWorktrees) title = '● **多线并行开发中**';
+  else if (hasWorking) title = '● **研发推进中**';
+  else if (allLive.length > 0) title = '▲ **等待状态核查**';
 
-  // Pick latest observed write timestamp HH:MM:SS if present, else checkedAt
+  // Pick latest observed write timestamp HH:MM if present, else checkedAt
   const latestLastWrite = allLive
     .map(([, info]) => info.lastWrite)
     .filter(Boolean)
     .sort()
     .slice(-1)[0];
-  const ts = latestLastWrite
+  const tsFull = latestLastWrite
     ? String(latestLastWrite).slice(11, 19)
     : String(st.checkedAt || '').slice(11, 19);
+  const ts = tsFull ? tsFull.slice(0, 5) : '--:--';
 
-  const batchChunk = `**\`${st.batchId}\`**${st.pipeline?.markdownBreadcrumb ? ` ${st.pipeline.markdownBreadcrumb}` : ''}`;
+  const headerLine = st.pipeline?.markdownBreadcrumb
+    ? `> ${title} · \`${ts}\` · \`${st.batchId}\` · 进度 ${st.pipeline.markdownBreadcrumb}`
+    : `> ${title} · \`${ts}\` · 批次 \`${st.batchId}\``;
 
-  const telemetryParts = [];
-  if (hasAudit) {
-    const subShort = String(st.activeCrossAgent.subagentId || '').slice(0, 8);
-    telemetryParts.push(`\`R0#${subShort || 'active'}\` 隔离审计 \`${st.activeCrossAgent.taskId}\``);
-    telemetryParts.push(`\`HEAD ${st.git?.headShort ?? '-'}\``);
-    telemetryParts.push(`\`Δ ${st.git?.dirtyCount ?? '-'}\``);
-  } else if (Array.isArray(st.worktrees) && st.worktrees.length > 0) {
-    const wtSummary = st.worktrees.map((wt) => {
+  let detailLine = '';
+  if (hasBreaker) {
+    detailLine = '> 触发安全熔断保护，自动中继已暂停，等待你确认处理方式。';
+  } else if (hasAudit) {
+    detailLine = `> 独立审计专员正在隔离核验 \`${st.activeCrossAgent.taskId}\`（代码仓保持只读未改动），完成后自动回传总控，无需你操作。`;
+  } else if (hasHandoff) {
+    detailLine = `> 检测到 \`${st.pendingCrossAgent.length}\` 项跨端待转交任务，正在自动安排独立审计专员接手。`;
+  } else if (hasWorktrees) {
+    const wtParts = st.worktrees.map((wt) => {
+      const label = wt.role ? formatRoleLabelCn(wt.role) : `${wt.id.toUpperCase()} 线`;
+      if (!wt.exists) return `\`${label}\`（目录缺失）`;
       const rInfo = wt.role ? st.roles?.[wt.role] : null;
-      const idleTxt = rInfo && rInfo.idleSeconds !== null ? ` ${rInfo.idleSeconds}s` : '';
-      const dTxt = wt.exists ? `Δ${wt.dirtyCount ?? '-'}` : 'missing';
-      return `\`${wt.id.toUpperCase()}\`${idleTxt} (${dTxt})`;
+      const activeTxt = rInfo && rInfo.idleSeconds !== null && rInfo.idleSeconds !== undefined
+        ? `活跃于 ${formatDurationCn(rInfo.idleSeconds)}前，`
+        : '';
+      const dirtyTxt = wt.dirtyCount > 0 ? `改动 ${wt.dirtyCount} 个文件` : '工作区干净';
+      return `\`${label}\`（${activeTxt}${dirtyTxt}）`;
     });
-    if (wtSummary.length === 1 && st.git?.headShort) {
-      telemetryParts.push(`\`HEAD ${st.git.headShort}\``);
-      telemetryParts.push(`\`Δ ${st.git.dirtyCount ?? '-'}\``);
-    }
-    telemetryParts.push(...wtSummary);
+    const tailTxt = hasWorking ? '正常运行，继续值守。' : '当前无新写入，正在核对是否待推进。';
+    detailLine = `> ${wtParts.join(' · ')}，${tailTxt}`;
   } else {
+    const dirtyNum = st.git?.dirtyCount;
+    const dirtyTxt = dirtyNum === null || dirtyNum === undefined
+      ? '工作区状态未知'
+      : (dirtyNum === 0 ? '当前工作区干净' : `当前工作区改动 ${dirtyNum} 个文件`);
     const targetList = workerEntries.length > 0 ? workerEntries : allLive.slice(0, 2);
     if (targetList.length > 0) {
-      const roleSummary = targetList
-        .map(([name, info]) => `\`${name.toUpperCase()}\` ${info.status === 'WORKING' ? '活跃' : '停滞'} \`${formatRoleIdleShort(info)}\``)
-        .join(' · ');
-      telemetryParts.push(roleSummary);
+      const roleSummaries = targetList.map(([name, info]) => {
+        const label = formatRoleLabelCn(name);
+        const dur = formatDurationCn(info.idleSeconds);
+        return info.status === 'WORKING'
+          ? `\`${label}\` 活跃（${dur}前有输出）`
+          : `\`${label}\` 已静默 ${dur}`;
+      });
+      const tailTxt = hasWorking ? '一切正常，继续值守。' : '正在核对是否已完工或需要唤醒。';
+      detailLine = `> ${roleSummaries.join(' · ')}，${dirtyTxt}，${tailTxt}`;
     } else {
-      telemetryParts.push('`UNBOUND`');
+      detailLine = `> 暂未绑定执行会话（${dirtyTxt}），等待绑定或启动会话。`;
     }
-    telemetryParts.push(`\`HEAD ${st.git?.headShort ?? '-'}\``);
-    telemetryParts.push(`\`Δ ${st.git?.dirtyCount ?? '-'}\``);
   }
 
-  let tail = '*Hold*';
-  if (hasBreaker) tail = '*HALT / Decision Needed*';
-  else if (hasAudit) tail = '*Wait*';
-  else if (hasHandoff) tail = '*Dispatch R0*';
-  else if (activeWorkers.length > 0 || allLive.some(([, i]) => i.status === 'WORKING')) tail = '*Hold*';
-  else if (allLive.length > 0) tail = '*Check Rules a–d*';
-
-  return `> ${badge} \`${ts || '--:--:--'}\` \`│\` ${batchChunk} \`│\` ${telemetryParts.join(' `·` ')} \`│\` ${tail}`;
+  return `${headerLine}\n${detailLine}`;
 }
 
 function collectStatus(ctx) {
@@ -1226,55 +1259,81 @@ function tryLoadStatusOptional(flags) {
 function cmdRender(flags, kindRaw) {
   const kind = String(kindRaw || 'heartbeat').trim().toLowerCase();
   const st = tryLoadStatusOptional(flags);
-  const ts = String(st?.checkedAt || formatIsoOffset()).slice(11, 19);
+  const tsFull = String(st?.checkedAt || formatIsoOffset()).slice(11, 19);
+  const ts = tsFull ? tsFull.slice(0, 5) : '--:--';
   const pipeline = flags.pipeline || st?.pipeline?.markdownBreadcrumb || '-';
   const mode = String(flags.mode || st?.automationMode || 'full-auto').toUpperCase();
   const batch = flags.batch || st?.batchId || 'BATCH';
 
   if (kind === 'heartbeat') {
-    if (st) {
+    const activity = flags.activity ? String(flags.activity).trim() : '';
+    if (st && !activity) {
       console.log(st.telemetryLine);
       return;
     }
-    const role = String(flags.role || 'AB').toUpperCase();
-    const idle = flags.idle ?? '0';
-    const sha = String(flags.sha || '--------').slice(0, 8);
-    const dirty = flags.dirty ?? '0';
-    console.log(`> \`● RELAY\` \`${ts}\` \`│\` **\`${batch}\`** \`│\` \`${role}\` 活跃 \`${idle}s\` \`·\` \`HEAD ${sha}\` \`·\` \`Δ ${dirty}\` \`│\` *Hold*`);
+    const progPart = pipeline && pipeline !== '-' ? `进度 ${pipeline}` : `批次 \`${batch}\``;
+    if (activity) {
+      const titleLine = st?.activeCrossAgent
+        ? `> ◐ **独立审计进行中** · \`${ts}\` · \`${batch}\` · ${progPart}`
+        : `> ● **研发推进中** · \`${ts}\` · \`${batch}\` · ${progPart}`;
+      console.log(`${titleLine}\n> ${activity}`);
+      return;
+    }
+    const roleLabel = formatRoleLabelCn(flags.role || 'ab');
+    const dur = formatDurationCn(flags.idle ?? 0);
+    const dirtyNum = Number(flags.dirty ?? 0);
+    const dirtyTxt = !Number.isNaN(dirtyNum) && dirtyNum === 0 ? '工作区干净' : `当前工作区改动 ${flags.dirty ?? 0} 个文件`;
+    console.log([
+      `> ● **研发推进中** · \`${ts}\` · ${progPart}`,
+      `> \`${roleLabel}\` 活跃（${dur}前有输出），${dirtyTxt}，一切正常，继续值守。`,
+    ].join('\n'));
     return;
   }
 
   if (kind === 'nudge') {
-    const task = flags.task || 'CURRENT-TASK';
-    const role = String(flags.role || 'AB').toUpperCase();
-    const idle = flags.idle ?? st?.roles?.[role.toLowerCase()]?.idleSeconds ?? '-';
-    const file = flags.file || 'msg.txt';
-    const exitCode = flags.exit ?? '0';
-    console.log(`> \`▲ NUDGE\` \`${ts}\` \`│\` **\`${task}\`** \`→\` \`${role}\`（停滞 \`${idle}s\` · \`${file}\` · \`exit ${exitCode}\`） \`│\` *Resumed*`);
+    const task = flags.task || '当前任务';
+    const roleRaw = String(flags.role || 'ab').toLowerCase();
+    const roleLabel = formatRoleLabelCn(roleRaw);
+    const dur = formatDurationCn(flags.idle ?? st?.roles?.[roleRaw]?.idleSeconds ?? 0);
+    const exitCode = String(flags.exit ?? '0');
+    const statusTxt = exitCode === '0' ? '投递成功' : `投递失败（退出码 ${exitCode}）`;
+    console.log([
+      `> ▲ **已自动唤醒推进** · \`${ts}\` · 任务 \`${task}\``,
+      `> \`${roleLabel}\` 已静默 ${dur}，已自动发送续推指令（${statusTxt}），等待恢复执行。`,
+    ].join('\n'));
     return;
   }
 
   if (kind === 'milestone') {
     const task = flags.task || 'T-01-R0';
-    const verdictRaw = String(flags.verdict || 'PASS').trim();
-    const verdictUpper = /通过|PASS/i.test(verdictRaw)
-      ? 'PASS'
-      : (/整改|REWORK/i.test(verdictRaw) ? 'REWORK' : (/阻塞|BLOCKED/i.test(verdictRaw) ? 'BLOCKED' : verdictRaw.toUpperCase()));
-    const gate = flags.gate || (verdictUpper === 'PASS' ? 'Next Gate Unlocked' : 'Gate Held');
+    const verdictRaw = String(flags.verdict || '通过').trim();
+    let verdictTitle = '审核完成';
+    let verdictCell = verdictRaw;
+    if (/通过|PASS/i.test(verdictRaw)) {
+      verdictTitle = '审核通过';
+      verdictCell = '审核通过';
+    } else if (/整改|REWORK/i.test(verdictRaw)) {
+      verdictTitle = '需要返修';
+      verdictCell = '需要返修';
+    } else if (/阻塞|BLOCKED/i.test(verdictRaw)) {
+      verdictTitle = '遇到阻塞';
+      verdictCell = '遇到阻塞';
+    }
+    const gate = flags.gate || (verdictCell === '审核通过' ? '已解锁下一阶段' : '等待处理');
     const sha8 = String(flags.sha || st?.git?.headShort || '--------').slice(0, 8);
-    const parent8 = flags.parent ? String(flags.parent).slice(0, 8) : '-';
     const reportName = flags.report ? path.basename(String(flags.report)) : '-';
     const sha256Short = flags.sha256 ? String(flags.sha256).slice(0, 8) : '-';
-    const counts = flags.counts || '0 / 0 / 0 / 0 / 0';
-    const unverified = flags.unverified ? ` *(未验 ${flags.unverified})*` : '';
-    const next = flags.next || '按流水线自动推进下一阶段';
+    const countsText = formatCountsCn(flags.counts || '0 / 0 / 0 / 0 / 0');
+    const unverified = flags.unverified ? ` *（另有 ${flags.unverified} 项待实机验证）*` : '';
+    const next = flags.next || '总控中枢核收后按流水线自动推进下一步';
+    const modeCn = /SEMI/i.test(mode) ? '半自动' : '全自动';
     console.log([
-      `> **◆ MILESTONE · \`${task}\` — \`${verdictUpper}\` (\`${gate}\`)**`,
-      `> 流水线：${pipeline} ｜ 模式：\`${mode}\``,
+      `> ◆ **阶段里程碑 · \`${task}\` ${verdictTitle}**（${gate}）`,
+      `> 当前进度：${pipeline} ｜ 托管模式：${modeCn}`,
       '',
-      '| 冻结对象与父链 | 独立报告与指纹 | 缺陷分布（阻/高/中/低/提） | 下一步自动流转 |',
-      '| :--- | :--- | :---: | :--- |',
-      `| \`${sha8}\` ← \`${parent8}\` | \`${reportName}\` · \`${sha256Short}\` | \`${counts}\`${unverified} | ${next} |`,
+      '| 核验结论 | 问题统计 | 审计报告与代码快照 | 接下来的自动动作 |',
+      '| :--- | :--- | :--- | :--- |',
+      `| **${verdictCell}** · ${gate} | ${countsText}${unverified} | \`${reportName}\`（版本 \`${sha8}\` · 指纹 \`${sha256Short}\`） | ${next} |`,
     ].join('\n'));
     return;
   }
@@ -1284,40 +1343,42 @@ function cmdRender(flags, kindRaw) {
     const reason = flags.reason || '单阶段返修次数达到上限或遇到阻塞门禁';
     const sha8 = String(flags.sha || st?.git?.headShort || '--------').slice(0, 8);
     const report = flags.report ? path.basename(String(flags.report)) : '-';
-    const options = flags.options || '① 批准追加修复轮次；② 发起 Spec 变更（CR）；③ 人工接管';
+    const options = flags.options || '① 批准追加修复轮次；② 发起 Spec 变更；③ 人工接管';
     console.log([
       '> [!CAUTION]',
-      `> **■ CIRCUIT BREAKER · \`${task}\` — 自动推进已暂停**`,
-      `> - **触发原因**：${reason}`,
-      `> - **现场锚点**：冻结 SHA \`${sha8}\` · 报告 \`${report}\``,
-      `> - **需你拍板**：${options}`,
+      `> **■ 自动推进已暂停 · 任务 \`${task}\` 需要你拍板**`,
+      `> - **暂停原因**：${reason}`,
+      `> - **当前现场**：代码版本 \`${sha8}\` · 审计报告 \`${report}\``,
+      `> - **你可以选择**：${options}`,
     ].join('\n'));
     return;
   }
 
   if (kind === 'complete') {
-    const countdown = flags.countdown ? `\`${flags.countdown}s\`` : '`未启用自动关机`';
+    const countdown = flags.countdown ? `\`${flags.countdown} 秒后自动关机\`` : '`未启用自动关机`';
     const rawStages = String(flags.stages || '');
     const rows = [];
     if (rawStages.trim().startsWith('[')) {
       for (const item of JSON.parse(rawStages)) {
-        rows.push(`| \`${item.stage || '-'}\` | \`${String(item.sha || '-').slice(0, 8)}\` | \`${item.fixes ?? 0}\` | \`${item.report ? path.basename(String(item.report)) : '-'}\` · \`${String(item.sha256 || '-').slice(0, 8)}\` | \`${item.gate || 'PASS'}\` |`);
+        const gateCn = /PASS|通过/i.test(String(item.gate || '通过')) ? '通过' : String(item.gate);
+        rows.push(`| \`${item.stage || '-'}\` | \`${String(item.sha || '-').slice(0, 8)}\` | \`${item.fixes ?? 0} 次\` | \`${item.report ? path.basename(String(item.report)) : '-'}\` | ${gateCn} |`);
       }
     } else if (rawStages.trim()) {
       for (const seg of rawStages.split(',').map((s) => s.trim()).filter(Boolean)) {
-        const [stg = '-', sha = '-', fixes = '0', report = '-', hash = '-', gate = 'PASS'] = seg.split(':');
-        rows.push(`| \`${stg}\` | \`${sha.slice(0, 8)}\` | \`${fixes}\` | \`${path.basename(report)}\` · \`${hash.slice(0, 8)}\` | \`${gate}\` |`);
+        const [stg = '-', sha = '-', fixes = '0', report = '-', _hash = '-', gate = '通过'] = seg.split(':');
+        const gateCn = /PASS|通过/i.test(String(gate || '通过')) ? '通过' : gate;
+        rows.push(`| \`${stg}\` | \`${sha.slice(0, 8)}\` | \`${fixes} 次\` | \`${path.basename(report)}\` | ${gateCn} |`);
       }
     } else {
-      rows.push(`| \`${batch}\` | \`${st?.git?.headShort ?? '-'}\` | \`0\` | \`FINAL_SUMMARY.md\` | \`PASS\` |`);
+      rows.push(`| \`${batch}\` | \`${st?.git?.headShort ?? '-'}\` | \`0 次\` | \`FINAL_SUMMARY.md\` | 通过 |`);
     }
     console.log([
       '> [!TIP]',
-      `> **✓ COMPLETED · \`${batch}\` — 全阶段独立审计通关闭环**`,
-      `> 流水线：${pipeline} ｜ 巡检已停止 ｜ 关机倒计时：${countdown}`,
+      `> **✓ 全部阶段已完成 · \`${batch}\` 独立审计闭环**`,
+      `> 完成进度：${pipeline} ｜ 自动巡检已停止 ｜ 关机倒计时：${countdown}`,
       '',
-      '| 阶段 | 最终冻结 SHA | 返修 | 独立审计报告与 SHA-256 | 门禁 |',
-      '| :--- | :--- | :---: | :--- | :---: |',
+      '| 阶段 | 最终代码版本 | 返修次数 | 独立审计报告 | 结论 |',
+      '| :--- | :---: | :---: | :--- | :---: |',
       ...rows,
     ].join('\n'));
     return;

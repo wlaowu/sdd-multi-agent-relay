@@ -96,18 +96,18 @@ node relay.mjs spawn [--config <relay.json> | --project <dir>] --role <hub|ab|c>
 node relay.mjs status [--config <relay.json> | --project <dir>] [--compact] [--json]
 ```
 - **输出**：
-  - `--compact`：仅输出 1 行 **Ops-Cockpit 遥测条**（`● RELAY` / `◐ AUDIT` / `▲ IDLE` / `■ BREAKER` + 流水线面包屑 + 活跃秒数 + 主仓与各 Worktree `Δ`）；
+  - `--compact`：输出 2 行**人话驾驶舱状态卡**（中文状态标题 + 阶段箭头进度 + 各角色/Worktree 中文说明与改动文件数 + 下一步提示）；
   - `hub` / `ab` / `c` 及自定义角色（如 `a` / `b`）的解析方式（`pinned` / `matcher` / `UNBOUND`）、会话标题、当前状态、`idle_seconds`、`last_write`；
   - `DISPATCH_BOARD.md` 最新状态表行与最近 5 条日志、`AB-codex.md` 最近标题、解析后的流水线阶段状态 `pipeline`；
   - 过滤掉 `processedHandoffs` 后的新增「发送到：Antigravity / 待转交」跨端列表；
   - Git `branch`、`HEAD`（完整与短 SHA）、`dirtyCount` 及 `worktrees[]`（所有显式配置或 `git worktree list` 自动发现的次级 Worktree 状态）；
   - 熔断标记：`noProgressBreaker`（哪些角色达到 `maxNoProgressPushes`）、`fixCapBreaker`（哪些阶段达到 `maxFixRounds`）、`activeCrossAgent`、`automationMode`。
 
-### 6. `render` — 生成标准化 Ops-Cockpit 输出块
+### 6. `render` — 生成标准化人话驾驶舱输出块
 ```powershell
-node relay.mjs render <heartbeat|nudge|milestone|breaker|complete> [--config <path> | --project <dir>] [options]
+node relay.mjs render <heartbeat|nudge|milestone|breaker|complete> [--config <path> | --project <dir>] [--activity <text>] [options]
 ```
-- 直接生成工程驾驶舱样式的 Markdown 块（单行心跳、停滞唤醒 `▲ NUDGE`、阶段里程碑 4 列状态表、熔断 `CAUTION` 与收官 `TIP` 汇总表），消除多设备输出格式漂移。
+- 直接生成人类一眼能看懂的中文 Markdown 卡片（2 行实时心跳、停滞唤醒 `▲ 已自动唤醒推进`、阶段里程碑 4 列表、熔断 `CAUTION` 与收官 `TIP` 汇总表），支持用 `--activity` 补充当前详细动作描述。
 
 ### 7. `send` — 带防重与无进展保护的安全队列投递
 ```powershell
