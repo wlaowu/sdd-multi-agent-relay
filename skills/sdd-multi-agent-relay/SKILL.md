@@ -19,6 +19,7 @@ description: >-
 - 配置 Schema 与 CLI 手册：[PROJECT_CONFIG_SCHEMA.md](./references/PROJECT_CONFIG_SCHEMA.md)
 - 统一中继与状态脚本：[relay.mjs](./scripts/relay.mjs)
 - 项目脚手架模板：[resources/](./resources/)（含 [SPEC.md.template](./resources/SPEC.md.template) 与 [AGENTS.md.template](./resources/AGENTS.md.template)）
+- 极简端到端范本：[examples/sample-pkg/](./examples/sample-pkg/)（`Spec` / `Board` / `Task` / `R0` 实样对照）
 
 ---
 

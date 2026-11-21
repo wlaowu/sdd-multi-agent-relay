@@ -65,6 +65,10 @@ case "$MODE" in
     rm -rf "$TARGET_SKILL"
     cp -R "$SKILL_SRC" "$TARGET_SKILL"
     cp "$PLUGIN_JSON_SRC" "${TARGET_ROOT}/plugin.json"
+    if [[ -d "$REPO_ROOT/assets" ]]; then
+      rm -rf "${TARGET_ROOT}/assets"
+      cp -R "$REPO_ROOT/assets" "${TARGET_ROOT}/assets"
+    fi
     [[ "$QUIET" == "false" ]] && echo "Installed Plugin -> $TARGET_ROOT"
     ;;
   skill)

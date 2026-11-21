@@ -30,7 +30,7 @@
 
 ## §2 方案文档整理标准（`specs/<THEME>_SPEC_V0.x.md` — 解决「做对事」）
 
-配套模板：[SPEC.md.template](../resources/SPEC.md.template)。每份达到可批准开工标准的 Spec **必须齐备 8 个板块**：
+配套模板：[SPEC.md.template](../resources/SPEC.md.template)；端到端参考范本见 [examples/sample-pkg/](../examples/sample-pkg/)。每份达到可批准开工标准的 Spec **必须齐备 8 个板块**：
 
 | 序号 | 必填板块 | 核心作用与写法要求 |
 | --- | --- | --- |

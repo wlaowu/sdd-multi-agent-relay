@@ -15,6 +15,7 @@ const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '..');
 const SKILL_NAME = 'sdd-multi-agent-relay';
 const SKILL_SRC = path.join(REPO_ROOT, 'skills', SKILL_NAME);
+const ASSETS_SRC = path.join(REPO_ROOT, 'assets');
 const PLUGIN_JSON_SRC = path.join(REPO_ROOT, 'plugin.json');
 const RELAY_SRC = path.join(SKILL_SRC, 'scripts', 'relay.mjs');
 
@@ -170,6 +171,9 @@ function cmdInstall(flags) {
     if (!fs.existsSync(PLUGIN_JSON_SRC)) throw new Error(`plugin.json missing: ${PLUGIN_JSON_SRC}`);
     fs.mkdirSync(path.join(targets.targetRoot, 'skills'), { recursive: true });
     fs.copyFileSync(PLUGIN_JSON_SRC, path.join(targets.targetRoot, 'plugin.json'));
+    if (fs.existsSync(ASSETS_SRC)) {
+      copyDirClean(ASSETS_SRC, path.join(targets.targetRoot, 'assets'));
+    }
   }
   copyDirClean(SKILL_SRC, targets.skillTarget);
 
@@ -284,12 +288,17 @@ function cmdDoctor(flags) {
   const codexSkillMd = path.join(homeDir, '.codex', 'skills', SKILL_NAME, 'SKILL.md');
 
   let pluginManifestValid = false;
+  let pluginLogoOk = true;
   if (fs.existsSync(pluginManifest)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(pluginManifest, 'utf8'));
       pluginManifestValid = Boolean(parsed?.name);
+      if (parsed?.logo) {
+        pluginLogoOk = fs.existsSync(path.join(pluginDir, parsed.logo));
+      }
     } catch {
       pluginManifestValid = false;
+      pluginLogoOk = false;
     }
   }
 
@@ -320,6 +329,7 @@ function cmdDoctor(flags) {
     homeDir,
     pluginInstalled: fs.existsSync(pluginSkillMd),
     pluginManifestValid,
+    pluginLogoOk,
     standaloneSkillInstalled: fs.existsSync(standaloneSkillMd),
     codexSkillInstalled: fs.existsSync(codexSkillMd),
     relaySyntaxOk,

@@ -35,7 +35,7 @@ Commands:
   init      Initialize .agents/development & .agents/relay scaffolding in a project
             Options: --project <path> [--runtime <wsl|windows|posix>] [--distro <name>]
                      [--name <projectName>] [--batch <batchId>] [--tier <L1|L2|L3>]
-                     [--branch <gitBranch>] [--force]
+                     [--branch <gitBranch>] [--no-gitignore] [--force]
 
   threads   List recent Codex rollout sessions (metadata + title index only)
             Options: [--runtime <wsl|windows|posix>] [--distro <name>] [--filter <keyword>]
@@ -510,6 +510,25 @@ function parseProjectForInit(projectArg, runtime, distroArg) {
   return { distro, projectPathForCodex: winProjectRoot, winProjectRoot };
 }
 
+function ensureGitignoreEntries(winProjectRoot, entries) {
+  const giPath = path.join(winProjectRoot, '.gitignore');
+  const existingText = fs.existsSync(giPath) ? fs.readFileSync(giPath, 'utf8') : '';
+  const existingSet = new Set(
+    existingText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean),
+  );
+  const missing = entries.filter((e) => !existingSet.has(e));
+  if (missing.length === 0) return false;
+
+  const nl = existingText.includes('\r\n') ? '\r\n' : '\n';
+  const prefix = existingText.length > 0 && !existingText.endsWith('\n') ? nl : '';
+  const header = existingSet.has('# sdd-multi-agent-relay (machine-local runtime files)')
+    ? ''
+    : `${prefix}${existingText.length > 0 ? nl : ''}# sdd-multi-agent-relay (machine-local runtime files)${nl}`;
+  const block = `${header}${missing.join(nl)}${nl}`;
+  fs.writeFileSync(giPath, existingText + block, 'utf8');
+  return true;
+}
+
 function cmdInit(flags) {
   const runtime = normalizeRuntime(flags.runtime);
   const { distro, projectPathForCodex, winProjectRoot } = parseProjectForInit(flags.project, runtime, flags.distro);
@@ -568,6 +587,15 @@ function cmdInit(flags) {
   };
 
   tryWrite(path.join(winProjectRoot, '.agents', 'relay.json'), JSON.stringify(relayConfig, null, 2) + '\n');
+  const exampleConfig = {
+    ...relayConfig,
+    runtime: 'windows | wsl | posix',
+    wslDistro: '',
+    projectPath: '<LOCAL_REPO_PATH>',
+    threads: { hub: '', ab: '', c: '' },
+    webhook: { ...(relayConfig.webhook || {}), url: '' },
+  };
+  tryWrite(path.join(winProjectRoot, '.agents', 'relay.example.json'), JSON.stringify(exampleConfig, null, 2) + '\n');
   tryWrite(path.join(relayRoot, 'relay-state.json'), JSON.stringify(createInitialState(), null, 2) + '\n');
   tryWrite(path.join(devRoot, 'STATE.md'), renderTemplate('STATE.md.template', vars));
   tryWrite(path.join(devRoot, 'DISPATCH_BOARD.md'), renderTemplate('DISPATCH_BOARD.md.template', vars));
@@ -587,12 +615,19 @@ function cmdInit(flags) {
     tryWrite(agentsSnippet, agentsContent);
   }
 
+  let gitignoreUpdated = false;
+  if (!flags['no-gitignore']) {
+    gitignoreUpdated = ensureGitignoreEntries(winProjectRoot, ['.agents/relay/', '.agents/relay.json']);
+  }
+
   console.log(JSON.stringify({
     ok: true,
     winProjectRoot,
     runtime,
     batchId,
     configPath: path.join(winProjectRoot, '.agents', 'relay.json'),
+    exampleConfigPath: path.join(winProjectRoot, '.agents', 'relay.example.json'),
+    gitignoreUpdated,
     createdCount: created.length,
     createdFiles: created,
   }, null, 2));

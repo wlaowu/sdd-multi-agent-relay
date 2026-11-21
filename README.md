@@ -115,7 +115,7 @@ npx -y sdd-multi-agent-relay init --project "/path/to/my-project" --runtime posi
 
 *(若未全局 npm install，也可用本地脚本 `node ~/.gemini/config/plugins/sdd-multi-agent-relay/skills/sdd-multi-agent-relay/scripts/relay.mjs init ...` 替代；脚本同时支持在项目任意目录省略 `--project/--config` 自动向上识别。)*
 
-> 请确保在业务仓库 `.gitignore` 中包含 `.agents/relay/`，避免把运行时状态与队列日志误提交进业务代码。
+> **多人同仓防冲突**：`init` 会自动把本机专属 `.agents/relay.json`（含本机路径与本机 Codex 会话 UUID）和 `.agents/relay/` 写入业务仓库 `.gitignore`，同时生成不含私密数据的 `.agents/relay.example.json` 供团队共享参考；Windows / macOS / WSL 同事共用同一业务仓库互不打架。
 
 ### 2. 日常提需求的 4 句标准口令（不用手写长文档）
 
@@ -130,14 +130,20 @@ npx -y sdd-multi-agent-relay init --project "/path/to/my-project" --runtime posi
 
 ---
 
-## 仓库目录结构
+## 仓库目录结构与开发自测
 
 ```text
 sdd-multi-agent-relay/
 ├── package.json                        # npx / npm devDependencies / postinstall 自动安装入口
 ├── plugin.json                         # Antigravity Plugin 清单
+├── CHANGELOG.md                        # 版本更新记录
+├── assets/
+│   └── logo.svg                        # Antigravity Plugin 图标
 ├── bin/
 │   └── cli.mjs                         # 跨平台零依赖安装器 (install/update/uninstall/doctor + relay 透传)
+├── test/
+│   └── smoke.test.mjs                  # 零依赖全链路冒烟测试 (npm test)
+├── .github/workflows/ci.yml            # GitHub Actions Linux + Windows 双端 CI
 ├── install.ps1                         # Windows 一键安装兼容脚本（调用 cli.mjs）
 ├── install.sh                          # macOS / Linux / WSL 一键安装兼容脚本（调用 cli.mjs）
 ├── README.md                           # 本说明文档
@@ -148,7 +154,10 @@ sdd-multi-agent-relay/
     │   ├── DOC_STANDARDS.md            # Spec/计划/任务卡整理标准、任务编号规范与配模指南
     │   ├── ROLE_PROMPTS.md             # 跨会话报文与 R0/Hub/换班提示词模板
     │   └── PROJECT_CONFIG_SCHEMA.md    # relay.json Schema 与 relay.mjs CLI 手册
+    ├── examples/sample-pkg/            # 完整脱敏四联范本 (Spec / Board / Task / R0 报告)
     ├── resources/                      # relay.json / SPEC / STATE / BOARD / TASK_CARD / AGENTS / FINAL_SUMMARY 模板
     └── scripts/
         └── relay.mjs                   # 跨平台零依赖中继监控 CLI
 ```
+
+维护本仓库后运行 `npm test` 即可自动验证 JSON 清单、语法、敏感词隔离、`init`/向上发现/8 字段识别/熔断逻辑及自动安装卸载闭环。

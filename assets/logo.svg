@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none">
+  <!-- Safe ~10% transparent margin inside 128x128 viewBox (content inside 14..114) -->
+  <rect x="16" y="16" width="96" height="96" rx="22" fill="#0F172A" stroke="#38BDF8" stroke-width="4"/>
+  <!-- Connecting relay paths -->
+  <path d="M40 46H88M40 46L64 82M88 46L64 82" stroke="#38BDF8" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Left hub node (Spec / Codex-Hub) -->
+  <circle cx="40" cy="46" r="10" fill="#0EA5E9" stroke="#F8FAFC" stroke-width="3"/>
+  <!-- Right implementer node (AB / C) -->
+  <circle cx="88" cy="46" r="10" fill="#22C55E" stroke="#F8FAFC" stroke-width="3"/>
+  <!-- Bottom gate / R0 audit node -->
+  <circle cx="64" cy="82" r="12" fill="#F59E0B" stroke="#F8FAFC" stroke-width="3"/>
+  <path d="M59 82L62.5 85.5L70 78" stroke="#0F172A" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

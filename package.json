@@ -14,10 +14,12 @@
   "scripts": {
     "install:plugin": "node ./bin/cli.mjs install --mode plugin",
     "install:skill": "node ./bin/cli.mjs install --mode skill",
-    "doctor": "node ./bin/cli.mjs doctor"
+    "doctor": "node ./bin/cli.mjs doctor",
+    "test": "node ./test/smoke.test.mjs"
   },
   "files": [
     "plugin.json",
+    "assets/",
     "bin/",
     "skills/",
     "install.ps1",

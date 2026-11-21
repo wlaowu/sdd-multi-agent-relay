@@ -28,4 +28,4 @@
 1. 不靠口头聊天当依据，需求与门禁以 `specs/`、`DISPATCH_BOARD.md` 与任务卡的 **SHA-256 指纹** 为准。
 2. **所有任务强制带唯一顺序编号**（预审 `T-00`，实施 `T-01`、`T-02`…；审计 `T-xx-R0`、返修 `T-xx-FIX1`、真机 `T-xx-C`），每个任务名称末尾均须附带 `[T-xx]`，Git 提交信息带任务号前缀（`feat(T-01): ...` / `fix(T-01-FIX1): ...`）。
 3. 严禁在提交、日志或协作文档中写入真实 API Key、Token、鉴权环境变量明文或私有媒体路径。
-4. 中继运行数据位于 `.agents/relay/`（如未加入 `.gitignore`，切勿混入业务提交）。
+4. `.agents/relay/` 与本机 `.agents/relay.json`（含个人系统路径与本机 Codex 会话 UUID）已默认纳入 `.gitignore` 防止多人同仓冲突；仅 `.agents/relay.example.json` 可随团队模板分享，切勿把 `.agents/relay/` 或个人 `relay.json` 强行提交进仓库。

@@ -65,9 +65,9 @@
 
 ### 1. `init` — 初始化项目协作骨架与中继配置
 ```powershell
-node relay.mjs init --project <path> --runtime <wsl|windows> [--distro <name>] [--name <projectName>] [--batch <batchId>] [--tier L1|L2|L3] [--force]
+node relay.mjs init --project <path> [--runtime <wsl|windows|posix>] [--distro <name>] [--name <projectName>] [--batch <batchId>] [--tier L1|L2|L3] [--no-gitignore] [--force]
 ```
-- **行为**：创建 `.agents/development/{specs,tasks,audits/design-reviews}` 与 `.agents/relay/messages`，渲染模板生成 `relay.json`、`STATE.md`、`DISPATCH_BOARD.md`、`tasks/{AB-codex,R0-review,C-desktop}.md`、`DISCUSSIONS.md`、`ISSUE_LEDGER.md`、`AUDIT_QUEUE.md` 与初始 `relay-state.json`。默认不覆盖已有文件（除非加 `--force`）。
+- **行为**：创建 `.agents/development/{specs,tasks,audits/design-reviews}` 与 `.agents/relay/messages`，渲染生成本机专属 `.agents/relay.json` 与团队共享模板 `.agents/relay.example.json`、`STATE.md`、`DISPATCH_BOARD.md`、`tasks/{AB-codex,R0-review,C-desktop}.md`、`DISCUSSIONS.md`、`ISSUE_LEDGER.md`、`AUDIT_QUEUE.md` 与 `AGENTS.md`（若已存在则另存片段文件不覆盖），并自动将 `.agents/relay/` 与 `.agents/relay.json` 写入 `.gitignore` 隔离多人本机路径/会话冲突。默认不覆盖已有文件（除非加 `--force`）。
 
 ### 2. `threads` — 安全枚举活跃 Codex 会话（仅元数据 + 标题索引）
 ```powershell

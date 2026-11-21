@@ -39,6 +39,12 @@ if ($Mode -eq "plugin") {
   if (Test-Path $TargetSkill) { Remove-Item -Recurse -Force $TargetSkill }
   Copy-Item -Recurse -Force $SkillSrc $TargetSkill
   Copy-Item -Force $PluginJsonSrc (Join-Path $TargetRoot "plugin.json")
+  $AssetsSrc = Join-Path $RepoRoot "assets"
+  $TargetAssets = Join-Path $TargetRoot "assets"
+  if (Test-Path $AssetsSrc) {
+    if (Test-Path $TargetAssets) { Remove-Item -Recurse -Force $TargetAssets }
+    Copy-Item -Recurse -Force $AssetsSrc $TargetAssets
+  }
   if (-not $Quiet) { Write-Host "Installed Plugin -> $TargetRoot" }
 } elseif ($Mode -eq "skill") {
   $TargetSkill = Join-Path $GeminiConfig "skills\sdd-multi-agent-relay"
