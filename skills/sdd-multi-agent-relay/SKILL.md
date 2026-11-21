@@ -17,6 +17,7 @@ description: >-
 - 方案/计划/任务文档整理标准与配模指南：[DOC_STANDARDS.md](./references/DOC_STANDARDS.md)
 - 角色提示词与接龙报文模板：[ROLE_PROMPTS.md](./references/ROLE_PROMPTS.md)
 - 配置 Schema 与 CLI 手册：[PROJECT_CONFIG_SCHEMA.md](./references/PROJECT_CONFIG_SCHEMA.md)
+- WSL2 断连/假死跨设备修复手册：[WSL_STABILITY_RUNBOOK.md](./references/WSL_STABILITY_RUNBOOK.md)
 - 统一中继与状态脚本：[relay.mjs](./scripts/relay.mjs)
 - 项目脚手架模板：[resources/](./resources/)（含 [SPEC.md.template](./resources/SPEC.md.template)、[CR_DELTA.md.template](./resources/CR_DELTA.md.template) 与 [AGENTS.md.template](./resources/AGENTS.md.template)）
 - 极简端到端范本：[examples/sample-pkg/](./examples/sample-pkg/)（`Spec` / `Board` / `Task` / `R0` 实样对照）

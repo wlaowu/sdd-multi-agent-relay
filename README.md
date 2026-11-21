@@ -158,7 +158,8 @@ sdd-multi-agent-relay/
     │   ├── WORKFLOW_SPEC_V1.0.md       # 完整工作流标准与 7 大高可用保障
     │   ├── DOC_STANDARDS.md            # Spec/计划/任务卡整理标准、任务编号规范与配模指南
     │   ├── ROLE_PROMPTS.md             # 跨会话报文与 R0/Hub/换班提示词模板
-    │   └── PROJECT_CONFIG_SCHEMA.md    # relay.json Schema 与 relay.mjs CLI 手册
+    │   ├── PROJECT_CONFIG_SCHEMA.md    # relay.json Schema 与 relay.mjs CLI 手册
+    │   └── WSL_STABILITY_RUNBOOK.md    # WSL2 中断、假死排查与跨设备修复手册
     ├── examples/sample-pkg/            # 完整脱敏四联范本 (Spec / Board / Task / R0 报告)
     ├── resources/                      # relay.json / SPEC / CR_DELTA / STATE / BOARD / TASK_CARD / AGENTS / FINAL_SUMMARY 模板
     └── scripts/
