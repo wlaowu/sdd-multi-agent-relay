@@ -6,6 +6,7 @@
 
 ## 核心特性
 
+- **零手动文件拷贝 · 全自动安装**：支持 `agy plugin install`、`npx` 一行全自动安装、以及挂进业务仓库实现“新人克隆即生效”。
 - **规范文档先行（`Spec → Plan → Task`）**：内置 8 板块 Spec 模板、5 条阶段门禁计划标准、3 段式任务卡、以及同步生成到目标仓库的 `AGENTS.md`（让 VS Code Codex 开局即懂团队协作铁律）。
 - **强制全链路任务编号**：每个阶段与任务名称末尾均须附带唯一顺序编号（预审 `T-00`，实施 `<任务名> [T-01]`、`[T-02]`…），同源派生 `T-01-R0`（审计）、`T-01-FIX1`（返修）、`T-02-C`（真机验收）、`R0-T01-01`（问题号）与 `feat(T-01):` 提交前缀，做到问题、代码与报告一一可追溯。
 - **`0 + (2+3)` 分权闭环**：总控中继（防停推动/跨端转发）+ `Hub`（方案定稿）+ `Codex-Hub`（拆单管看板，禁改源码）+ `AB`（单点写锁编码冻结 40 位 SHA）+ `C`（真机里程碑验证）+ `R0`（隔离目录只读独立审计）。
@@ -21,80 +22,98 @@
 
 ---
 
-## 团队安装与一键升级
+## 全自动安装方式（无需手动复制文件）
 
-> 依赖环境：**Node.js >= 18**（用于执行零依赖 `relay.mjs`）。
+> 唯一前置：**Node.js >= 18**（内置跨平台自举 CLI，无任何 npm 第三方依赖）。
 
-### 方式一：直接克隆进 Antigravity 插件目录（推荐，`git pull` 一键升级）
+### 方案 A：一行命令自动安装（个人全局生效，推荐）
 
-克隆至 `~/.gemini/config/plugins/sdd-multi-agent-relay` 后立即作为 Antigravity Plugin 生效：
+1. **方式 A1：`npx` 一键远程安装（Windows / macOS / Linux / WSL 通用）**
+   ```bash
+   # 私有仓库 HTTPS 方式（加 --with-codex 可顺带装入 ~/.codex/skills）：
+   npx -y git+https://github.com/<组织或用户名>/sdd-multi-agent-relay.git install --with-codex
 
-- **Windows (PowerShell)**：
-  ```powershell
-  mkdir "$env:USERPROFILE\.gemini\config\plugins" -Force | Out-Null
-  git clone <团队私有仓库_URL> "$env:USERPROFILE\.gemini\config\plugins\sdd-multi-agent-relay"
-  # 后续升级：
-  git -C "$env:USERPROFILE\.gemini\config\plugins\sdd-multi-agent-relay" pull
-  ```
-- **macOS / Linux / WSL**：
-  ```bash
-  mkdir -p ~/.gemini/config/plugins
-  git clone <团队私有仓库_URL> ~/.gemini/config/plugins/sdd-multi-agent-relay
-  # 后续升级：
-  git -C ~/.gemini/config/plugins/sdd-multi-agent-relay pull
-  ```
+   # 若团队使用 SSH Key 访问私有仓库：
+   npx -y git+ssh://git@github.com/<组织或用户名>/sdd-multi-agent-relay.git install --with-codex
+   ```
+   *(可选参数：`--mode skill` 仅装为全局 Skill；`--mode project` 仅装入当前项目 `.agents/skills/`；Windows 下附加 `--wsl-distro Debian` 可同时同步到 WSL 内的 Codex。)*
 
-### 方式二：先克隆到任意目录，再用安装脚本安装为 Plugin 或独立 Skill
+2. **方式 A2：Antigravity 原生 CLI 直接安装**
+   ```bash
+   agy plugin install https://github.com/<组织或用户名>/sdd-multi-agent-relay.git
+   ```
 
-```powershell
-# Windows PowerShell
-git clone <团队私有仓库_URL> sdd-multi-agent-relay
-cd sdd-multi-agent-relay
-.\install.ps1                  # 安装为 Plugin（默认）
-# .\install.ps1 -Mode skill    # 或安装为独立 Skill
-```
-
-```bash
-# macOS / Linux / WSL
-git clone <团队私有仓库_URL> sdd-multi-agent-relay
-cd sdd-multi-agent-relay
-bash ./install.sh              # 安装为 Plugin（默认）
-# bash ./install.sh -m skill   # 或安装为独立 Skill
-```
-
-### 方式三：随业务仓库共享（Team Repo Sharing）
-
-把本仓库作为 Git Submodule 挂载到业务项目（如 `tools/sdd-relay`），并在业务仓库 `.agents/skills.json` 注册：
-
-```json
-{
-  "entries": [
-    { "path": "tools/sdd-relay/skills" }
-  ]
-}
-```
+3. **后续自检、一键升级与卸载**：
+   ```bash
+   npx -y git+https://github.com/<组织或用户名>/sdd-multi-agent-relay.git doctor     # 自检安装与 Codex 连通状态
+   npx -y git+https://github.com/<组织或用户名>/sdd-multi-agent-relay.git update     # 一键更新到最新版
+   npx -y git+https://github.com/<组织或用户名>/sdd-multi-agent-relay.git uninstall  # 干净卸载
+   ```
 
 ---
 
-## 2 分钟上手：团队成员日常怎么用
+### 方案 B：业务仓库级“零命令”全自动生效（推荐给研发团队）
+
+让团队新人**不用记任何安装命令**，只要拉取业务代码（或执行常规 `npm/pnpm install`）就自动激活：
+
+#### 方式 B1：Git Submodule + `.agents/plugins.json`（Antigravity 开箱即载，零额外命令）
+在任意业务仓库执行一次登记，提交进 Git：
+```bash
+git submodule add https://github.com/<组织或用户名>/sdd-multi-agent-relay.git tools/sdd-relay
+```
+在业务仓库新建 `.agents/plugins.json`：
+```json
+{
+  "entries": [
+    { "path": "tools/sdd-relay" }
+  ]
+}
+```
+之后任何团队成员用 `git clone --recursive <业务仓库>` 打开项目时，Antigravity 会自动发现并加载该插件！
+
+#### 方式 B2：业务仓库 `package.json` `postinstall` 钩子自动装入本机全局
+如果是前端 / Node / 全栈项目，在业务仓库 `package.json` 增加 `devDependencies` 与静默安装钩子：
+```json
+{
+  "devDependencies": {
+    "sdd-multi-agent-relay": "git+ssh://git@github.com/<组织或用户名>/sdd-multi-agent-relay.git"
+  },
+  "scripts": {
+    "postinstall": "sdd-multi-agent-relay install --mode plugin --with-codex --quiet || true"
+  }
+}
+```
+团队成员像往常一样跑 `pnpm install` / `npm install`，插件与 Skill 即自动安装并保持团队同版本。
+
+---
+
+### 方案 C：一句话让 Antigravity 对话自己装好
+
+不习惯敲命令的同学，直接把下面这句话发给 Antigravity：
+> 「请从 Git 仓库 `https://github.com/<组织或用户名>/sdd-multi-agent-relay.git` 自动下载并运行 `node bin/cli.mjs install --mode plugin --with-codex` 安装到本地，然后跑 `doctor` 验证通过。」
+
+---
+
+## 2 分钟上手：初始化与日常使用
 
 ### 1. 初始化业务项目（每项目只需一次）
 
+如果全局插件目录已安装，或通过 `npx` 调用，均可直接执行 `init`：
+
 ```powershell
 # Windows 原生项目：
-node "$env:USERPROFILE\.gemini\config\plugins\sdd-multi-agent-relay\skills\sdd-multi-agent-relay\scripts\relay.mjs" init `
-  --project "D:\path\to\my-project" --runtime windows --name MyApp --batch PKG-FEAT-01
+npx -y sdd-multi-agent-relay init --project "D:\path\to\my-project" --runtime windows --name MyApp --batch PKG-FEAT-01
 
 # WSL 项目：
-node "$env:USERPROFILE\.gemini\config\plugins\sdd-multi-agent-relay\skills\sdd-multi-agent-relay\scripts\relay.mjs" init `
-  --project "/path/to/my-project" --runtime wsl --distro Debian --name MyApp --batch PKG-FEAT-01
+npx -y sdd-multi-agent-relay init --project "/path/to/my-project" --runtime wsl --distro Debian --name MyApp --batch PKG-FEAT-01
 ```
 
 ```bash
 # macOS / Linux 原生项目：
-node ~/.gemini/config/plugins/sdd-multi-agent-relay/skills/sdd-multi-agent-relay/scripts/relay.mjs init \
-  --project "/path/to/my-project" --runtime posix --name MyApp --batch PKG-FEAT-01
+npx -y sdd-multi-agent-relay init --project "/path/to/my-project" --runtime posix --name MyApp --batch PKG-FEAT-01
 ```
+
+*(若未全局 npm install，也可用本地脚本 `node ~/.gemini/config/plugins/sdd-multi-agent-relay/skills/sdd-multi-agent-relay/scripts/relay.mjs init ...` 替代；脚本同时支持在项目任意目录省略 `--project/--config` 自动向上识别。)*
 
 > 请确保在业务仓库 `.gitignore` 中包含 `.agents/relay/`，避免把运行时状态与队列日志误提交进业务代码。
 
@@ -105,7 +124,7 @@ node ~/.gemini/config/plugins/sdd-multi-agent-relay/skills/sdd-multi-agent-relay
 2. **复杂任务预审排雷**：
    > 「让 `R0` 对这份 Spec 做实施前设计预审，按极端反例补齐缺漏，把待我决定的项收敛到 `PD-01..`。」
 3. **一次性拍板全自动推进**：
-   > 「方案定稿，`PD-01=...`。按 `L3` 全程自动续推（最多返修 2 轮，遇熔断或阻塞通知我），转交 `Codex-Hub` 拆计划并开始托管。」
+   > 「方案定稿，`PD-01=...`。按 `L3` 全程自动续推（最多返修 2 轮，遇熔断或阻塞通知我），转交 `Codex-Hub` 按任务编号 `[T-01]` 拆计划并开始托管。」
 4. **中途改需求 / 断线续跑**：
    > 「按 `sdd-multi-agent-relay` 断点恢复协议检查当前项目进度并继续托管推进。」
 
@@ -115,15 +134,18 @@ node ~/.gemini/config/plugins/sdd-multi-agent-relay/skills/sdd-multi-agent-relay
 
 ```text
 sdd-multi-agent-relay/
+├── package.json                        # npx / npm devDependencies / postinstall 自动安装入口
 ├── plugin.json                         # Antigravity Plugin 清单
-├── install.ps1                         # Windows 安装与更新脚本
-├── install.sh                          # macOS / Linux / WSL 安装与更新脚本
+├── bin/
+│   └── cli.mjs                         # 跨平台零依赖安装器 (install/update/uninstall/doctor + relay 透传)
+├── install.ps1                         # Windows 一键安装兼容脚本（调用 cli.mjs）
+├── install.sh                          # macOS / Linux / WSL 一键安装兼容脚本（调用 cli.mjs）
 ├── README.md                           # 本说明文档
 └── skills/sdd-multi-agent-relay/
     ├── SKILL.md                        # Antigravity Skill 核心执行手册
     ├── references/
     │   ├── WORKFLOW_SPEC_V1.0.md       # 完整工作流标准与 7 大高可用保障
-    │   ├── DOC_STANDARDS.md            # Spec/计划/任务卡整理标准与配模指南
+    │   ├── DOC_STANDARDS.md            # Spec/计划/任务卡整理标准、任务编号规范与配模指南
     │   ├── ROLE_PROMPTS.md             # 跨会话报文与 R0/Hub/换班提示词模板
     │   └── PROJECT_CONFIG_SCHEMA.md    # relay.json Schema 与 relay.mjs CLI 手册
     ├── resources/                      # relay.json / SPEC / STATE / BOARD / TASK_CARD / AGENTS / FINAL_SUMMARY 模板

@@ -1,0 +1,27 @@
+{
+  "name": "sdd-multi-agent-relay",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Spec-Driven Multi-Agent Gated Orchestration Workflow (0 + 2+3 roles) Antigravity Plugin & Skill with cross-platform Codex relay CLI.",
+  "bin": {
+    "sdd-multi-agent-relay": "./bin/cli.mjs",
+    "sdd-relay": "./bin/cli.mjs"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "install:plugin": "node ./bin/cli.mjs install --mode plugin",
+    "install:skill": "node ./bin/cli.mjs install --mode skill",
+    "doctor": "node ./bin/cli.mjs doctor"
+  },
+  "files": [
+    "plugin.json",
+    "bin/",
+    "skills/",
+    "install.ps1",
+    "install.sh",
+    "README.md"
+  ]
+}
