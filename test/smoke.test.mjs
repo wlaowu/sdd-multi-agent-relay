@@ -601,3 +601,52 @@ test('v1.3.1 bugfixes: blockquote blank-line spacing and ppid orphan process det
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('v1.3.2 WSL stability checks: analyze detects /mnt DrvFS paths and doctor reports hostHealth', () => {
+  const tmp = makeTempDir('sdd-v132-test-');
+  const tmpHome = path.join(tmp, 'home');
+  const tmpProj = path.join(tmp, 'proj');
+  fs.mkdirSync(tmpHome, { recursive: true });
+  fs.mkdirSync(tmpProj, { recursive: true });
+
+  try {
+    const initRes = runNode([CLI_PATH, 'init', '--project', tmpProj, '--runtime', 'windows', '--name', 'WslCheckApp', '--batch', 'PKG-WSL-01']);
+    assert.equal(initRes.status, 0, initRes.stderr);
+
+    const cfgPath = path.join(tmpProj, '.agents', 'relay.json');
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    cfg.runtime = 'wsl';
+    cfg.projectPath = '/mnt/c/demo-repo';
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+
+    const warnRes = runNode([CLI_PATH, 'analyze', '--project', tmpProj, '--json']);
+    assert.equal(warnRes.status, 0, warnRes.stderr);
+    const warnJson = JSON.parse(warnRes.stdout);
+    assert.ok(warnJson.warnings.some((w) => w.code === 'WSL_DRVFS_IO_RISK'), 'Expected WSL_DRVFS_IO_RISK warning for /mnt/c path');
+
+    cfg.projectPath = '/home/dev/demo-repo';
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+    const cleanRes = runNode([CLI_PATH, 'analyze', '--project', tmpProj, '--json']);
+    assert.equal(cleanRes.status, 0, cleanRes.stderr);
+    const cleanJson = JSON.parse(cleanRes.stdout);
+    assert.equal(cleanJson.warnings.some((w) => w.code === 'WSL_DRVFS_IO_RISK'), false, 'Should not warn when projectPath is on /home ext4');
+
+    const inst = runNode([CLI_PATH, 'install', '--mode', 'plugin', '--home', tmpHome]);
+    assert.equal(inst.status, 0, inst.stderr);
+    fs.writeFileSync(path.join(tmpHome, '.wslconfig'), '[wsl2]\nnetworkingMode=mirrored\nautoProxy=true\n', 'utf8');
+
+    const docRes = runNode([CLI_PATH, 'doctor', '--home', tmpHome]);
+    assert.equal(docRes.status, 0, docRes.stderr);
+    const doc = JSON.parse(docRes.stdout);
+    assert.equal(doc.ok, true);
+    assert.ok(Array.isArray(doc.warnings));
+    if (process.platform === 'win32') {
+      assert.ok(doc.hostHealth, 'Expected hostHealth on Windows');
+      assert.equal(doc.hostHealth.wslMirroredEnabled, true);
+      assert.ok(doc.hostHealth.tcpDynamicPortCount > 0);
+      assert.ok(doc.warnings.length >= 1);
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

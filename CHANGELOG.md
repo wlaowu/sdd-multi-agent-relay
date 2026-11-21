@@ -1,5 +1,12 @@
 # 更新日志（CHANGELOG）
 
+## [1.3.2] - 2026-11-21
+
+### WSL2 与 Windows 宿主稳态体检护栏
+- **`analyze` 新增 WSL 跨盘 9P/DrvFS I/O 风险检测（`WSL_DRVFS_IO_RISK`）**：当 `runtime="wsl"` 时自动检查 `projectPath` 与 `roleWorktrees` 是否误放在 `/mnt/<drive>/` 下，提醒将业务代码与高频构建/测试缓存（`target/`、`node_modules`、SQLite）保持在 WSL Linux ext4 分区（`/home/...`），避免跨盘高频 I/O 拖死 WSL。
+- **`doctor` 新增 Windows 宿主机网络稳态体检（`hostHealth`）**：只读检查 `netsh int ipv4 show dynamicport tcp` 动态短端口容量（`< 30000` 时预警并提供 `netsh int ipv4 set dynamicport tcp start=20000 num=45535` 扩容指令，防范 `Tcpip 4231` 耗尽）以及 `.wslconfig` 是否开启易与代理 TUN 冲突的 `networkingMode=mirrored`。
+- **文档与指南同步**：在 `SKILL.md`、`WORKFLOW_SPEC_V1.0.md` 与 `PROJECT_CONFIG_SCHEMA.md` 固化 WSL2 分区与短端口池稳态约定。
+
 ## [1.3.1] - 2026-11-21
 
 ### 线上盲区与排版修复

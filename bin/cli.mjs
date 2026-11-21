@@ -278,6 +278,65 @@ function cmdUninstall(flags) {
   }, null, 2));
 }
 
+function inspectWindowsHostHealth(homeDir) {
+  if (process.platform !== 'win32') return null;
+
+  let tcpDynamicStartPort = null;
+  let tcpDynamicPortCount = null;
+  try {
+    const netshRes = spawnSync('netsh', ['int', 'ipv4', 'show', 'dynamicport', 'tcp'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 5000,
+    });
+    if (netshRes.status === 0 && netshRes.stdout) {
+      const nums = [];
+      for (const line of netshRes.stdout.split(/\r?\n/)) {
+        const m = line.match(/[:：]\s*(\d+)\s*$/);
+        if (m) nums.push(parseInt(m[1], 10));
+      }
+      if (nums.length >= 2) {
+        tcpDynamicStartPort = nums[0];
+        tcpDynamicPortCount = nums[1];
+      }
+    }
+  } catch {
+    // ignore probe errors
+  }
+
+  let wslMirroredEnabled = false;
+  const wslConfigPath = path.join(homeDir, '.wslconfig');
+  if (fs.existsSync(wslConfigPath)) {
+    try {
+      const text = fs.readFileSync(wslConfigPath, 'utf8');
+      wslMirroredEnabled = /^\s*networkingMode\s*=\s*mirrored\b/im.test(text);
+    } catch {
+      wslMirroredEnabled = false;
+    }
+  }
+
+  const warnings = [];
+  if (tcpDynamicPortCount !== null && tcpDynamicPortCount < 30000) {
+    warnings.push({
+      code: 'WIN_TCP_DYNAMIC_PORTS_LOW',
+      message: `Windows TCP dynamic port pool is ${tcpDynamicPortCount} (start ${tcpDynamicStartPort}), which can exhaust under heavy tests (Tcpip 4231). Run in Administrator PowerShell: netsh int ipv4 set dynamicport tcp start=20000 num=45535`,
+    });
+  }
+  if (wslMirroredEnabled) {
+    warnings.push({
+      code: 'WSL_MIRRORED_NETWORK_RISK',
+      message: '.wslconfig uses networkingMode=mirrored, which can conflict with proxy TUN adapters (FSE HostVnic / WSAETIMEDOUT). Prefer default nat mode unless mirrored localhost networking is strictly required.',
+    });
+  }
+
+  return {
+    tcpDynamicStartPort,
+    tcpDynamicPortCount,
+    wslMirroredEnabled,
+    warnings,
+  };
+}
+
 function cmdDoctor(flags) {
   const homeDir = flags.home ? path.resolve(flags.home) : os.homedir();
   const geminiConfig = path.join(homeDir, '.gemini', 'config');
@@ -323,6 +382,9 @@ function cmdDoctor(flags) {
     }
   }
 
+  const hostHealth = inspectWindowsHostHealth(homeDir);
+  const warnings = (hostHealth?.warnings || []).map((w) => w.message);
+
   console.log(JSON.stringify({
     ok: nodeMajor >= 18 && relaySyntaxOk && (fs.existsSync(pluginSkillMd) || fs.existsSync(standaloneSkillMd)),
     nodeVersion: process.versions.node,
@@ -335,6 +397,8 @@ function cmdDoctor(flags) {
     codexSkillInstalled: fs.existsSync(codexSkillMd),
     relaySyntaxOk,
     localThreadsProbeOk,
+    ...(hostHealth ? { hostHealth } : {}),
+    warnings,
   }, null, 2));
 }
 

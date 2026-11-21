@@ -45,6 +45,7 @@ description: >-
      --runtime <wsl|windows|posix> [--distro <name>] --name "<项目名>" --batch "<BATCH-ID>" --tier L3
    ```
    确保将 `.agents/relay/` 加入 `.gitignore`（或确认不混入业务提交），建议拉出独立特性分支 `git checkout -b feat/<BATCH-ID>`。
+   > **WSL2 稳态环境建议**：① 将仓库代码与高频构建缓存（Rust `target/`、`node_modules`、SQLite、测试临时库）放在 WSL Linux ext4 分区（如 `~/work/...`）而非 `/mnt/c/...`（避免跨 9P/DrvFS 高频 I/O 拖死通道）；② Windows 宿主机高并发跑测试时可用 `doctor` 检查动态短端口池是否偏小（建议 `>= 30000`，管理员 PowerShell 执行 `netsh int ipv4 set dynamicport tcp start=20000 num=45535`）并优先使用稳定 `nat` 网络而非冲突的 `mirrored`+TUN 组合；③ 开工前运行 `relay.mjs analyze --json` 自动体检跨盘路径风险。
 
 2. **三种动态会话绑定方式（不写死会话，随时可换）**：
    - **方式 A（按标题自动动态匹配，推荐）**：`init` 默认会在 `.agents/relay.json` 生成 `threadMatchers`（如 `"<项目名>-Codex-Hub"` / `"<项目名>-AB"` / `"<项目名>-C"`）。只要在 VS Code Codex 把会话命名为对应标题，`threads` 可留空 `""`，`status`/`send` 会通过 `~/.codex/session_index.jsonl` 自动匹配最新活跃同名会话。

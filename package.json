@@ -1,6 +1,6 @@
 {
   "name": "sdd-multi-agent-relay",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "private": true,
   "type": "module",
   "description": "Spec-Driven Multi-Agent Gated Orchestration Workflow (0 + 2+3 roles) Antigravity Plugin & Skill with cross-platform Codex relay CLI.",

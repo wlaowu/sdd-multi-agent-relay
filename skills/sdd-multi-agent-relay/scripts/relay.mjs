@@ -2684,6 +2684,25 @@ function runAnalyze(ctx) {
     addWarning('PENDING_EVENTS', '.agents/relay/events.jsonl', null, `存在 ${pendingEvents.length} 条未确认事件信号，请及时查看并 ack。`);
   }
 
+  if (ctx.config.runtime === 'wsl') {
+    const wslPaths = [
+      { label: 'projectPath', val: ctx.config.projectPath },
+      ...Object.entries(ctx.config.worktrees?.roleWorktrees || {}).map(([k, v]) => ({ label: `worktrees.roleWorktrees.${k}`, val: v })),
+      ...Object.entries(ctx.config.roleWorktrees || {}).map(([k, v]) => ({ label: `roleWorktrees.${k}`, val: v })),
+    ];
+    for (const item of wslPaths) {
+      const p = String(item.val || '').trim();
+      if (/^\/mnt\/[a-z](?:\/|$)/i.test(p)) {
+        addWarning(
+          'WSL_DRVFS_IO_RISK',
+          '.agents/relay.json',
+          null,
+          `WSL 配置字段 ${item.label}（${p}）位于跨盘 /mnt/<drive>/ 挂载下；Rust target/、node_modules、SQLite 与高频测试 I/O 易拖死 9P/DrvFS 通道，建议将代码与构建缓存迁移至 WSL Linux ext4 分区（如 /home/...）。`,
+        );
+      }
+    }
+  }
+
   return {
     ok: errors.length === 0,
     checkedAt: formatIsoOffset(),

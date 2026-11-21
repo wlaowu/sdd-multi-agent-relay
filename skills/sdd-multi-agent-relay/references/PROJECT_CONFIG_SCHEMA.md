@@ -147,7 +147,7 @@ node relay.mjs notify [--config <relay.json> | --project <dir>] --event <circuit
 ```powershell
 node relay.mjs analyze [--config <relay.json> | --project <dir>] [--json]
 ```
-- **行为**：只读检查最新 Spec 是否含 `V-xx` 与未拍板 `PD-xx`、看板是否存在重复任务号 / 缺失 `[T-xx]` / 相对链接断链、文档是否超出 `contextBudgets`、是否存在未确认事件或未解除熔断。发现阻断级 `errors` 时退出码为 `1`。
+- **行为**：只读检查最新 Spec 是否含 `V-xx` 与未拍板 `PD-xx`、看板是否存在重复任务号 / 缺失 `[T-xx]` / 相对链接断链、文档是否超出 `contextBudgets`、是否存在未确认事件或未解除熔断；当 `runtime="wsl"` 时同时检查 `projectPath` 与 `roleWorktrees` 是否误置于 `/mnt/<drive>/`（触发 `WSL_DRVFS_IO_RISK` 提醒）。发现阻断级 `errors` 时退出码为 `1`。
 
 ### 11. `event` — 零依赖事件信号总线
 ```powershell

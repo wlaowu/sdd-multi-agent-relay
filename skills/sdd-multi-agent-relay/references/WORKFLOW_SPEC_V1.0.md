@@ -167,7 +167,7 @@ flowchart TD
 
 ## §8 `v1.3.0` 黄金三角增强机制（防返修、防腐化、事件驱动）
 
-1. **防漂移开工前体检（`relay.mjs analyze`）**：派单开工前执行只读体检，拦截缺失 `V-xx`、未拍板 `PD-xx`、看板重号、缺失 `[T-xx]`、断链文件、超上下文预算与未解除熔断（发现阻断错误即返回非 `0` 退出码）。
+1. **防漂移开工前体检（`relay.mjs analyze`）**：派单开工前执行只读体检，拦截缺失 `V-xx`、未拍板 `PD-xx`、看板重号、缺失 `[T-xx]`、断链文件、超上下文预算与未解除熔断（发现阻断错误即返回非 `0` 退出码），并在 `runtime="wsl"` 下自动检测 `/mnt/<drive>/` 跨盘 9P/DrvFS 高频 I/O 风险（`WSL_DRVFS_IO_RISK`）；配合 `cli.mjs doctor` 自动核查 Windows 动态短端口池容量与 `.wslconfig` `mirrored` 冲突风险。
 2. **波次并行与多 Worktree 调度（Wave）**：看板任务总表通过 `波次/依赖` 列（`W0`、`W1`、`W2（依赖 T-01）`）声明可并行波次，`status` 自动汇总 `waves.currentWave` 与 `waves.parallelReady`，配合多 `git worktree` 让无依赖子任务并发推进。
 3. **上下文预算监控与日志归档（`relay.mjs compact`）**：按 `contextBudgets`（默认 `stateMaxLines: 120`、`boardMaxLines: 160`、`taskCardMaxLines: 250`）持续监控协作文档膨胀，支持 `--dry-run` 预警与 `--apply` 将超长历史调度日志安全归档至 `.agents/development/archive/` 并留 1 行索引。
 4. **零依赖事件信号总线与阶段耗时追踪（`relay.mjs event` & `stageTimers`）**：角色完工、阻塞或送审时可选向 `.agents/relay/events.jsonl` 发射结构化信号（`done`/`blocked`/`review_ready`/`heartbeat`/`decision_needed`），巡检人话卡片最高优先展示 `◆ **收到事件信号**` 并累计各阶段耗时。
