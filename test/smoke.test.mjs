@@ -513,3 +513,91 @@ test('v1.3.0 Golden Triangle: waves, analyze, event bus, stageTimers, compact ar
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('v1.3.1 bugfixes: blockquote blank-line spacing and ppid orphan process detection work', () => {
+  const tmp = makeTempDir('sdd-v131-test-');
+  try {
+    const cliHelp = runNode([CLI_PATH, '--help']);
+    assert.equal(cliHelp.status, 0, cliHelp.stderr);
+    assert.ok(cliHelp.stdout.includes('procs'), 'cli --help should list procs');
+
+    const relayHelp = runNode([RELAY_PATH, '--help']);
+    assert.equal(relayHelp.status, 0, relayHelp.stderr);
+    assert.ok(relayHelp.stdout.includes('procs'), 'relay --help should list procs');
+    assert.ok(relayHelp.stdout.includes('--check-procs'), 'relay --help should list --check-procs');
+
+    const initRes = runNode([CLI_PATH, 'init', '--project', tmp, '--runtime', 'windows', '--name', 'ProcApp', '--batch', 'PKG-PROC-01']);
+    assert.equal(initRes.status, 0, initRes.stderr);
+
+    // 1. Verify blockquote cards always separate header and detail lines with an empty '>' line
+    const compactRes = runNode([CLI_PATH, 'status', '--project', tmp, '--compact']);
+    assert.equal(compactRes.status, 0, compactRes.stderr);
+    assert.match(compactRes.stdout, /\r?\n>\r?\n>/, 'status --compact must include empty blockquote separator line');
+
+    const hbDefault = runNode([CLI_PATH, 'render', 'heartbeat', '--project', tmp, '--activity', '正在检查血缘']);
+    assert.equal(hbDefault.status, 0, hbDefault.stderr);
+    assert.match(hbDefault.stdout, /\r?\n>\r?\n>/);
+
+    const hbStandalone = runNode([CLI_PATH, 'render', 'heartbeat', '--role', 'ab', '--idle', '12', '--dirty', '2']);
+    assert.equal(hbStandalone.status, 0, hbStandalone.stderr);
+    assert.match(hbStandalone.stdout, /\r?\n>\r?\n>/);
+
+    const nudgeRes = runNode([CLI_PATH, 'render', 'nudge', '--project', tmp, '--task', 'T-01', '--idle', '190']);
+    assert.equal(nudgeRes.status, 0, nudgeRes.stderr);
+    assert.match(nudgeRes.stdout, /\r?\n>\r?\n>/);
+
+    const msRes = runNode([CLI_PATH, 'render', 'milestone', '--project', tmp, '--task', 'T-01-R0', '--verdict', '通过']);
+    assert.equal(msRes.status, 0, msRes.stderr);
+    assert.match(msRes.stdout, /\r?\n>\r?\n>/);
+
+    const brRes = runNode([CLI_PATH, 'render', 'breaker', '--project', tmp, '--task', 'T-01-FIX2-R0']);
+    assert.equal(brRes.status, 0, brRes.stderr);
+    assert.match(brRes.stdout, /\r?\n>\r?\n> - \*\*暂停原因\*\*/);
+
+    const compRes = runNode([CLI_PATH, 'render', 'complete', '--project', tmp]);
+    assert.equal(compRes.status, 0, compRes.stderr);
+    assert.match(compRes.stdout, /\r?\n>\r?\n> 完成进度：/);
+
+    // 2. Orphan worker snapshot: codex host is dead; cargo test ppid=1 and spawned capture-worker.js ppid=2001
+    const orphanSnap = path.join(tmp, 'ps-orphan.txt');
+    fs.writeFileSync(orphanSnap, [
+      '   1    0 systemd /sbin/init',
+      '2001    1 cargo cargo test --test e2e c_v',
+      '2002 2001 node node scripts/capture-worker.js',
+    ].join('\n') + '\n', 'utf8');
+
+    const orphanRes = runNode([CLI_PATH, 'procs', '--input', orphanSnap, '--json']);
+    assert.equal(orphanRes.status, 0, orphanRes.stderr);
+    const orphanJson = JSON.parse(orphanRes.stdout);
+    assert.equal(orphanJson.ok, true);
+    assert.equal(orphanJson.codexHostCount, 0);
+    assert.equal(orphanJson.hasActiveCodexWorker, false);
+    assert.equal(orphanJson.attachedWorkers.length, 0);
+    assert.equal(orphanJson.hasOrphanWorkers, true);
+    assert.equal(orphanJson.orphanWorkers.length, 2);
+    assert.match(orphanJson.warning || '', /孤儿/);
+
+    // 3. Attached worker snapshot: live codex host pid=1000 -> bash -> cargo test -> capture-worker.js
+    const attachedSnap = path.join(tmp, 'ps-attached.txt');
+    fs.writeFileSync(attachedSnap, [
+      '   1    0 systemd /sbin/init',
+      '1000    1 codex /home/user/.local/bin/codex',
+      '2000 1000 bash /bin/bash -lc cargo test',
+      '2001 2000 cargo cargo test --test e2e c_v',
+      '2002 2001 node node scripts/capture-worker.js',
+    ].join('\n') + '\n', 'utf8');
+
+    const attachedRes = runNode([CLI_PATH, 'procs', '--input', attachedSnap, '--json']);
+    assert.equal(attachedRes.status, 0, attachedRes.stderr);
+    const attachedJson = JSON.parse(attachedRes.stdout);
+    assert.equal(attachedJson.ok, true);
+    assert.equal(attachedJson.codexHostCount, 1);
+    assert.equal(attachedJson.hasActiveCodexWorker, true);
+    assert.ok(attachedJson.attachedWorkers.length >= 2);
+    assert.equal(attachedJson.hasOrphanWorkers, false);
+    assert.equal(attachedJson.orphanWorkers.length, 0);
+    assert.equal(attachedJson.attachedWorkers[0].codexAncestorPid, 1000);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

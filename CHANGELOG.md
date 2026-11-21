@@ -1,5 +1,13 @@
 # 更新日志（CHANGELOG）
 
+## [1.3.1] - 2026-11-21
+
+### 线上盲区与排版修复
+- **孤儿进程 `ppid` 血缘甄别（防误判 `AB`/`C` 仍在线）**：
+  - 新增 `relay.mjs procs` 子命令与 `relay.mjs status --check-procs` 参数（同步接入 `bin/cli.mjs` 透传），在核查后台测试/构建进程时沿 `ppid` 祖先链追溯宿主：严格区分挂在存活 `codex` 宿主进程下的真正在跑任务（`attachedWorkers`）与父 `codex` 已退出、祖先链挂至 `PID 1`/断链的孤儿进程（`orphanWorkers`），避免 WSL 抖动或会话中断后误报「仍在后台实跑测试」。
+- **人话驾驶舱引用块空行防粘连**：
+  - 统一更新 `buildTelemetryLine()`、`render <heartbeat|nudge|milestone|breaker|complete>` 及 `SKILL.md` / `ROLE_PROMPTS.md` 模板，在卡片标题行与正文行之间加入空引用行 `>`（`\n>\n`），彻底解决部分 Markdown 渲染器将两行 `>` 合并成一段导致排版粘连的问题。
+
 ## [1.3.0] - 2026-11-21
 
 ### 黄金三角升级（防返修 · 抗腐化 · 事件驱动）

@@ -105,6 +105,7 @@ description: >-
    - 子会话落盘报告后，在磁盘逐项校验目标报告 `sha256` 与历史报告未篡改，执行 `relay.mjs state finish-review ...`，写报文并用 `relay.mjs send --role hub ...` 回传 `Codex-Hub` 核收。
 
 5. **Codex 防停推动（仅在无进行中 R0 且目标 `idle_seconds >= 180` 时触发）**：
+   - **防孤儿进程误判铁律**：怀疑处于 `STOPPED` 状态的会话正在后台跑耗时编译/测试时，**严禁仅凭进程名判定会话仍在线**；必须先运行 `relay.mjs procs --json`（或 `status --check-procs --json`）沿 `ppid` 祖先链核对：仅当 `hasActiveCodexWorker === true`（构建/测试进程确实挂在存活的 `codex` 宿主进程下）才暂缓唤醒；若仅见 `orphanWorkers`（父 `codex` 会话已退出、进程挂至 `PID 1` 或父进程断链），严禁误报「仍在后台实跑测试」，应立即按规则 `a`–`d` 核对并唤醒。
    - `relay.mjs send` 内置同 `last_write` 去重保护与无进展计数（配置了 `worktrees.roleWorktrees[role]` 时自动以对应 worktree 作为 `-C` 目录）：
    - **规则 a**：`AB` 停且当前任务尚无冻结 SHA 完成回执 → `relay.mjs send --role ab ...`
    - **规则 b**：`AB` 停且已交完成回执，`HUB` 停且看板未核收 → `relay.mjs send --role hub ...`
@@ -113,7 +114,7 @@ description: >-
 
 ### §4.1 人话驾驶舱标准化输出规范（全设备统一易懂视效）
 
-为了保证不同设备与项目巡检输出**让人一眼看懂当前在干什么**，一律采用清晰几何徽章（`●`/`◐`/`◆`/`▲`/`■`/`✓`）与自然中文状态卡片（由 `relay.mjs` 原生渲染）。**严禁直接对用户吐出 `R0#hex`、`HEAD`、`Δ`、`Hold`、`Wait` 或纯英文状态代码等机械黑话**：
+为了保证不同设备与项目巡检输出**让人一眼看懂当前在干什么**，一律采用清晰几何徽章（`●`/`◐`/`◆`/`▲`/`■`/`✓`）与自然中文状态卡片（由 `relay.mjs` 原生渲染，且**标题行与正文行之间必须留空引用行 `>` 防止 Markdown 渲染粘连**）。**严禁直接对用户吐出 `R0#hex`、`HEAD`、`Δ`、`Hold`、`Wait` 或纯英文状态代码等机械黑话**：
 
 | 场景 | 触发时机 | 必须采用的输出方式（见 [ROLE_PROMPTS.md](./references/ROLE_PROMPTS.md#九人话驾驶舱标准化输出模板中继主会话直接复用)） |
 | :--- | :--- | :--- |

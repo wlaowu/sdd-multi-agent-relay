@@ -161,6 +161,7 @@ flowchart TD
 | **规则 c（`HUB` 派新单 `AB` 未接）** | `HUB` 已发新派单、`HUB` 与 `AB` 均停且 `AB` 未接棒 | 推 `AB` 接棒执行新单 |
 | **规则 d（双停且指向不明）** | `AB` 与 `HUB` 均停且看板状态模糊/疑有隐性阻塞 | 推 `HUB` 核对看板继续派发或明确写明阻塞原因与责任方 |
 | **规则 e（单方工作中静默）** | 任一方处于运行中（`idle_seconds < 180`） | 保持安静不打扰，仅在规则 a（`AB` 自身停于未完成任务且正在等待之外）例外 |
+| **后台长命令与孤儿进程甄别（`ppid` 溯源）** | 怀疑 `STOPPED` 会话仍在跑编译/测试子进程 | 必须运行 `relay.mjs procs --json`（或 `status --check-procs`）沿 `ppid` 溯源：仅当 `hasActiveCodexWorker=true`（仍挂在存活 `codex` 宿主下）才暂缓唤醒；孤儿进程（父 `codex` 已死、挂至 `PID 1`）不得阻断防停唤醒 |
 
 ---
 

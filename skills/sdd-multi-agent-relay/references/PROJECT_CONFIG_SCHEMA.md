@@ -99,10 +99,11 @@ node relay.mjs spawn [--config <relay.json> | --project <dir>] --role <hub|ab|c>
 
 ### 5. `status` — 全量态势采集、Worktree 遥测与熔断判定
 ```powershell
-node relay.mjs status [--config <relay.json> | --project <dir>] [--compact] [--json]
+node relay.mjs status [--config <relay.json> | --project <dir>] [--compact] [--check-procs] [--json]
 ```
 - **输出**：
-  - `--compact`：输出 2 行**人话驾驶舱状态卡**（中文状态标题 + 阶段箭头进度 + 各角色/Worktree 中文说明与改动文件数 + 下一步提示）；
+  - `--compact`：输出带空引用行分隔的**人话驾驶舱状态卡**（中文状态标题 + `>` 空行防粘连 + 阶段箭头进度 + 各角色/Worktree 中文说明与改动文件数 + 下一步提示）；
+  - `--check-procs`：附带采集运行中构建/测试进程并按 `ppid` 血缘输出 `processAudit`（识别存活 Codex 子进程 vs 孤儿进程）；
   - `hub` / `ab` / `c` 及自定义角色（如 `a` / `b`）的解析方式（`pinned` / `matcher` / `UNBOUND`）、会话标题、当前状态、`idle_seconds`、`last_write`；
   - `DISPATCH_BOARD.md` 最新状态表行与最近 5 条日志、`AB-codex.md` 最近标题、解析后的流水线阶段状态 `pipeline`、波次进度 `waves`（`currentWave` / `parallelReady` / `canParallelize`）；
   - 事件总线状态 `pendingEvents` / `recentEvents`、阶段计时 `stageTimers` / `activeStageTimer`、文档预算 `contextBudgets`；
@@ -168,3 +169,9 @@ node relay.mjs compact [--config <relay.json> | --project <dir>] [--dry-run] [--
 node relay.mjs ui [--config <relay.json> | --project <dir>] [--export <file.html>] [--host 127.0.0.1] [--port 4317]
 ```
 - **行为**：生成完全自包含（零外链 CDN/字体）的中文响应式驾驶舱网页，涵盖流水线进度、波次并行、角色/Worktree、事件总线、防漂移体检与日志；传 `--export` 输出单文件静态 HTML，否则在本地启动 HTTP 服务每 5 秒轮询 `/api/status`。
+
+### 14. `procs` — 后台工作进程 `ppid` 血缘与孤儿进程排查
+```powershell
+node relay.mjs procs [--config <relay.json> | --project <dir>] [--runtime <wsl|windows|posix>] [--distro <name>] [--filter <regex>] [--input <ps-file>] [--json]
+```
+- **行为**：只读扫描当前运行环境的进程表（Windows `Win32_Process` / WSL & POSIX `ps -eo pid=,ppid=,comm=,args=`，亦可用 `--input` 读取离线快照），沿 `ppid` 祖先链区分挂在存活 `codex` 宿主下的真正在跑任务（`attachedWorkers`）与父 `codex` 会话已退出、祖先链挂至 `PID 1`/断链的孤儿构建/测试进程（`orphanWorkers`），防止在 WSL 抖动或会话中断后误判 `AB`/`C` 仍在线。

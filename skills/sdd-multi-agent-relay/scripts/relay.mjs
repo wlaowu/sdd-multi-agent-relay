@@ -104,7 +104,11 @@ Commands:
                      [--sandbox <read-only|workspace-write>] [--dry-run]
 
   status    Inspect Codex threads, worktrees, board, task cards, git state, and breakers
-            Options: [--config <path> | --project <dir>] [--compact] [--json]
+            Options: [--config <path> | --project <dir>] [--compact] [--check-procs] [--json]
+
+  procs     Inspect running build/test worker processes and classify attached vs orphan (ppid lineage)
+            Options: [--config <path> | --project <dir>] [--runtime <wsl|windows|posix>] [--distro <name>]
+                     [--filter <regex>] [--input <ps-file>] [--json]
 
   render    Render standardized human-readable cockpit status blocks for Antigravity outputs
             Subcommands: heartbeat | nudge | milestone | breaker | complete
@@ -153,7 +157,7 @@ Commands:
 }
 
 const BOOLEAN_FLAGS = new Set([
-  'help', 'json', 'compact', 'force', 'dry-run', 'apply', 'auto', 'all', 'no-gitignore',
+  'help', 'json', 'compact', 'force', 'dry-run', 'apply', 'auto', 'all', 'no-gitignore', 'check-procs',
 ]);
 
 function parseArgs(argv) {
@@ -1558,7 +1562,7 @@ function buildTelemetryLine(st) {
     }
   }
 
-  return `${headerLine}\n${detailLine}`;
+  return `${headerLine}\n>\n${detailLine}`;
 }
 
 function resolveActiveStageTimer(pipeline, state) {
@@ -1680,6 +1684,7 @@ function collectStatus(ctx) {
   const waves = parseWaveSummary(boardDoc.taskRows, config, state, state.activeCrossAgent, boardDoc.waveColIdx);
   const contextBudgets = inspectContextBudgets(ctx);
   const activeStageTimer = resolveActiveStageTimer(pipeline, state);
+  const processAudit = ctx._checkProcs ? collectProcessSnapshot(config, ctx._procFlags || {}) : undefined;
 
   const statusObj = {
     checkedAt: formatIsoOffset(),
@@ -1702,6 +1707,7 @@ function collectStatus(ctx) {
     stageTimers: state.stageTimers || {},
     activeStageTimer,
     contextBudgets,
+    ...(processAudit !== undefined ? { processAudit } : {}),
     boardTaskRows,
     boardLastLogs,
     abHeadings,
@@ -1721,6 +1727,10 @@ function collectStatus(ctx) {
 
 function cmdStatus(flags) {
   const ctx = loadConfigAndPaths(flags);
+  if (flags['check-procs']) {
+    ctx._checkProcs = true;
+    ctx._procFlags = flags;
+  }
   const st = collectStatus(ctx);
   if (flags.json) {
     console.log(JSON.stringify(st, null, 2));
@@ -1742,6 +1752,13 @@ function cmdStatus(flags) {
     console.log('--- worktrees ---');
     for (const wt of st.worktrees) {
       console.log(`WORKTREE ${wt.id} (${wt.source}): exists=${wt.exists} branch=${wt.branch ?? '-'} HEAD=${wt.headShort ?? '-'} DIRTY=${wt.dirtyCount ?? '-'} path=${wt.path}`);
+    }
+  }
+  if (st.processAudit) {
+    console.log('--- process audit (ppid lineage) ---');
+    console.log(`PROCS: ok=${st.processAudit.ok} codexHosts=${st.processAudit.codexHostCount ?? 0} attached=${st.processAudit.attachedWorkers?.length ?? 0} orphan=${st.processAudit.orphanWorkers?.length ?? 0}`);
+    if (st.processAudit.hasOrphanWorkers && !st.processAudit.hasActiveCodexWorker) {
+      console.log(`ORPHAN_WORKERS_WARNING: ${st.processAudit.warning}`);
     }
   }
   if (st.waves?.hasWaves) {
@@ -1811,7 +1828,7 @@ function cmdRender(flags, kindRaw) {
       const titleLine = st?.activeCrossAgent
         ? `> ◐ **独立审计进行中** · \`${ts}\` · \`${batch}\` · ${progPart}`
         : `> ● **研发推进中** · \`${ts}\` · \`${batch}\` · ${progPart}`;
-      console.log(`${titleLine}\n> ${activity}`);
+      console.log(`${titleLine}\n>\n> ${activity}`);
       return;
     }
     const roleLabel = formatRoleLabelCn(flags.role || 'ab');
@@ -1820,6 +1837,7 @@ function cmdRender(flags, kindRaw) {
     const dirtyTxt = !Number.isNaN(dirtyNum) && dirtyNum === 0 ? '工作区干净' : `当前工作区改动 ${flags.dirty ?? 0} 个文件`;
     console.log([
       `> ● **研发推进中** · \`${ts}\` · ${progPart}`,
+      '>',
       `> \`${roleLabel}\` 活跃（${dur}前有输出），${dirtyTxt}，一切正常，继续值守。`,
     ].join('\n'));
     return;
@@ -1834,6 +1852,7 @@ function cmdRender(flags, kindRaw) {
     const statusTxt = exitCode === '0' ? '投递成功' : `投递失败（退出码 ${exitCode}）`;
     console.log([
       `> ▲ **已自动唤醒推进** · \`${ts}\` · 任务 \`${task}\``,
+      '>',
       `> \`${roleLabel}\` 已静默 ${dur}，已自动发送续推指令（${statusTxt}），等待恢复执行。`,
     ].join('\n'));
     return;
@@ -1864,6 +1883,7 @@ function cmdRender(flags, kindRaw) {
     const modeCn = /SEMI/i.test(mode) ? '半自动' : '全自动';
     console.log([
       `> ◆ **阶段里程碑 · \`${task}\` ${verdictTitle}**（${gate}）`,
+      '>',
       `> 当前进度：${pipeline} ｜ 托管模式：${modeCn}`,
       '',
       '| 核验结论 | 问题统计 | 审计报告与代码快照 | 接下来的自动动作 |',
@@ -1882,6 +1902,7 @@ function cmdRender(flags, kindRaw) {
     console.log([
       '> [!CAUTION]',
       `> **■ 自动推进已暂停 · 任务 \`${task}\` 需要你拍板**`,
+      '>',
       `> - **暂停原因**：${reason}`,
       `> - **当前现场**：代码版本 \`${sha8}\` · 审计报告 \`${report}\``,
       `> - **你可以选择**：${options}`,
@@ -1910,6 +1931,7 @@ function cmdRender(flags, kindRaw) {
     console.log([
       '> [!TIP]',
       `> **✓ 全部阶段已完成 · \`${batch}\` 独立审计闭环**`,
+      '>',
       `> 完成进度：${pipeline} ｜ 自动巡检已停止 ｜ 关机倒计时：${countdown}`,
       '',
       '| 阶段 | 最终代码版本 | 返修次数 | 独立审计报告 | 结论 |',
@@ -3077,9 +3099,12 @@ function renderCockpitHtml(payload, live = false) {
       document.getElementById('hdr-mode').textContent = modeCn + ' · ' + (st.runtime || '-');
 
       const cleanTelemetry = String(st.telemetryLine || '暂无态势')
+        .replace(/^>\\s?$/gm, '')
         .replace(/^>\\s?/gm, '')
+        .replace(/\\n{2,}/g, '\\n')
         .replace(/\\*\\*/g, '')
-        .replace(/\`/g, '');
+        .replace(/\`/g, '')
+        .trim();
       document.getElementById('telemetry-box').textContent = cleanTelemetry;
 
       const stages = (st.pipeline && st.pipeline.stages) || [];
@@ -3272,6 +3297,217 @@ async function cmdUi(flags) {
   });
 }
 
+const DEFAULT_WORKER_PROC_RE = /\b(?:cargo|rustc|pytest|jest|vitest|playwright|mocha|tsx|tsc|vite|webpack|esbuild|npm|pnpm|yarn|node|python3?|go\s+test|dotnet|gradle|mvn|capture-worker)\b/i;
+const CODEX_HOST_RE = /(?:^|[\\/])codex(?:\.exe)?(?:\s|$)/i;
+const SYSTEM_ANCESTOR_RE = /^(?:init|systemd|sessionleader|relay|sshd|login|wsl|code-server|explorer\.exe|services\.exe|svchost\.exe|wininit\.exe|smss\.exe)$/i;
+
+function parsePsTable(rawText) {
+  const rows = [];
+  for (const line of String(rawText || '').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const m = trimmed.match(/^(\d+)\s+(\d+)\s+(\S+)(?:\s+(.*))?$/);
+    if (!m) continue;
+    const pid = parseInt(m[1], 10);
+    const ppid = parseInt(m[2], 10);
+    const comm = m[3];
+    const args = (m[4] || comm).trim();
+    if (/(?:relay\.mjs|ps\s+-eo\s+pid=)/.test(args)) continue;
+    rows.push({ pid, ppid, comm, args });
+  }
+  return rows;
+}
+
+function classifyProcessTree(procRows, filterRegexStr = '') {
+  const byPid = new Map(procRows.map((r) => [r.pid, r]));
+  const workerRe = filterRegexStr ? new RegExp(filterRegexStr, 'i') : DEFAULT_WORKER_PROC_RE;
+
+  const codexHosts = procRows.filter((r) => CODEX_HOST_RE.test(`${r.comm} ${r.args}`));
+  const codexPidSet = new Set(codexHosts.map((r) => r.pid));
+
+  const attachedWorkers = [];
+  const orphanWorkers = [];
+  const detachedWorkers = [];
+
+  for (const row of procRows) {
+    if (codexPidSet.has(row.pid)) continue;
+    const fullText = `${row.comm} ${row.args}`;
+    if (!workerRe.test(fullText)) continue;
+
+    const visited = new Set([row.pid]);
+    const ancestorChain = [];
+    let cur = row;
+    let codexAncestorPid = null;
+    let rootAnchor = row;
+    let exitedToSystemOrMissing = false;
+
+    for (let step = 0; step < 64; step++) {
+      if (cur.ppid <= 1) {
+        exitedToSystemOrMissing = true;
+        break;
+      }
+      const parent = byPid.get(cur.ppid);
+      if (!parent) {
+        exitedToSystemOrMissing = true;
+        break;
+      }
+      if (visited.has(parent.pid)) break;
+      visited.add(parent.pid);
+      ancestorChain.push(parent.pid);
+
+      if (codexPidSet.has(parent.pid)) {
+        codexAncestorPid = parent.pid;
+        break;
+      }
+      if (SYSTEM_ANCESTOR_RE.test(parent.comm)) {
+        rootAnchor = cur;
+        break;
+      }
+      rootAnchor = parent;
+      cur = parent;
+    }
+
+    const baseItem = {
+      pid: row.pid,
+      ppid: row.ppid,
+      comm: row.comm,
+      args: row.args.slice(0, 200),
+      ancestorChain,
+    };
+
+    if (codexAncestorPid !== null) {
+      attachedWorkers.push({
+        ...baseItem,
+        attachedToCodex: true,
+        codexAncestorPid,
+        lineage: [row.pid, ...ancestorChain],
+      });
+    } else if (exitedToSystemOrMissing && !SYSTEM_ANCESTOR_RE.test(rootAnchor.comm)) {
+      orphanWorkers.push({
+        ...baseItem,
+        isOrphan: true,
+        orphanRootPid: rootAnchor.pid,
+        orphanReason: row.ppid <= 1 || !byPid.has(row.ppid)
+          ? `父进程 (${row.ppid}) 已退出或挂至 PID 1`
+          : `根工作进程 ${rootAnchor.comm} (PID ${rootAnchor.pid}) 的父进程已退出或挂至 PID 1`,
+      });
+    } else {
+      detachedWorkers.push(baseItem);
+    }
+  }
+
+  const hasActiveCodexWorker = attachedWorkers.length > 0;
+  const hasOrphanWorkers = orphanWorkers.length > 0;
+  const warning = hasOrphanWorkers && !hasActiveCodexWorker
+    ? `检测到 ${orphanWorkers.length} 个孤儿构建/测试进程（父 Codex 会话已退出，祖先链已挂至 PID 1 或断开），不可误判为 AB/C 仍在线；请核对后按防停规则唤醒。`
+    : null;
+
+  return {
+    codexHostCount: codexHosts.length,
+    codexHosts: codexHosts.map((h) => ({ pid: h.pid, ppid: h.ppid, comm: h.comm, args: h.args.slice(0, 160) })),
+    attachedWorkers,
+    orphanWorkers,
+    detachedWorkers,
+    hasActiveCodexWorker,
+    hasOrphanWorkers,
+    warning,
+  };
+}
+
+function collectProcessSnapshot(config, flags = {}) {
+  const runtime = flags.runtime ? normalizeRuntime(flags.runtime) : normalizeRuntime(config?.runtime);
+  const distro = flags.distro !== undefined ? flags.distro : (config?.wslDistro || '');
+  const filterRegexStr = typeof flags.filter === 'string' ? flags.filter.trim() : '';
+
+  let rawText = '';
+  let source = runtime;
+  try {
+    if (flags.input) {
+      const inp = path.resolve(String(flags.input));
+      if (!fs.existsSync(inp)) throw new Error(`Process snapshot file not found: ${inp}`);
+      rawText = fs.readFileSync(inp, 'utf8');
+      source = 'input-file';
+    } else if (runtime === 'wsl') {
+      const res = runWslBash(distro, 'ps -eo pid=,ppid=,comm=,args= 2>/dev/null', [], undefined, 15000);
+      if (res.status !== 0) {
+        throw new Error((res.stderr || res.error?.message || `wsl ps exit=${res.status}`).trim());
+      }
+      rawText = res.stdout || '';
+    } else if (runtime === 'posix') {
+      const res = spawnSync('ps', ['-eo', 'pid=,ppid=,comm=,args='], { encoding: 'utf8', timeout: 10000 });
+      if (res.status !== 0) {
+        throw new Error((res.stderr || res.error?.message || `ps exit=${res.status}`).trim());
+      }
+      rawText = res.stdout || '';
+    } else {
+      const psScript = 'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) $($_.Name) $($_.CommandLine)" }';
+      const res = spawnSync('powershell.exe', ['-NoProfile', '-Command', psScript], {
+        encoding: 'utf8',
+        timeout: 15000,
+        windowsHide: true,
+      });
+      if (res.status !== 0) {
+        throw new Error((res.stderr || res.error?.message || `powershell exit=${res.status}`).trim());
+      }
+      rawText = res.stdout || '';
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      source,
+      runtime,
+      error: err?.message || String(err),
+      codexHostCount: 0,
+      codexHosts: [],
+      attachedWorkers: [],
+      orphanWorkers: [],
+      detachedWorkers: [],
+      hasActiveCodexWorker: false,
+      hasOrphanWorkers: false,
+      warning: null,
+    };
+  }
+
+  const rows = parsePsTable(rawText);
+  const classified = classifyProcessTree(rows, filterRegexStr);
+  return {
+    ok: true,
+    source,
+    runtime,
+    totalScanned: rows.length,
+    ...classified,
+  };
+}
+
+function cmdProcs(flags) {
+  let config = null;
+  if (flags.config || flags.project || (!flags.runtime && !flags.input)) {
+    try {
+      config = loadConfigAndPaths(flags).config;
+    } catch {
+      config = null;
+    }
+  }
+  const result = collectProcessSnapshot(config, flags);
+  if (flags.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  console.log(`=== 后台工作进程血缘核查 (${result.runtime} / ${result.source}) ===`);
+  if (!result.ok) {
+    console.log(`采集失败: ${result.error}`);
+    return;
+  }
+  console.log(`存活 Codex 宿主: ${result.codexHostCount} | 挂在 Codex 下: ${result.attachedWorkers.length} | 孤儿进程: ${result.orphanWorkers.length} | 其他独立进程: ${result.detachedWorkers.length}`);
+  if (result.warning) console.log(`告警: ${result.warning}`);
+  for (const w of result.attachedWorkers) {
+    console.log(`[ATTACHED] pid=${w.pid} ppid=${w.ppid} codex=${w.codexAncestorPid} ${w.comm} ${w.args}`);
+  }
+  for (const w of result.orphanWorkers) {
+    console.log(`[ORPHAN] pid=${w.pid} ppid=${w.ppid} reason=${w.orphanReason} ${w.comm} ${w.args}`);
+  }
+}
+
 async function main() {
   const { positionals, flags } = parseArgs(process.argv.slice(2));
   const cmd = positionals[0];
@@ -3294,6 +3530,9 @@ async function main() {
       break;
     case 'status':
       cmdStatus(flags);
+      break;
+    case 'procs':
+      cmdProcs(flags);
       break;
     case 'render':
       cmdRender(flags, positionals[1]);
