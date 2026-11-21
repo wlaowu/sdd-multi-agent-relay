@@ -132,6 +132,7 @@ Commands:
               mark-processed  --handoff <id>
               rotate-thread   --role <role> --thread <uuid> [--reason <text>]
               reset-pushes    --role <role>
+              ack-alert       [--kind <all|restart|unconsumed>] [--role <role>]
 
   notify    Send webhook notification (Feishu / WeCom / DingTalk / Generic JSON)
             Options: [--config <path> | --project <dir>]
@@ -602,6 +603,20 @@ function loadConfigAndPaths(flags) {
   return { config, configPath, winProjectRoot, devDir, relayDir, statePath, logPath, eventsPath };
 }
 
+function createInitialRoleState(totalPushes = 0) {
+  return {
+    lastPushAt: null,
+    lastPushEpochMs: null,
+    lastPushThreadWrite: null,
+    lastPushThreadMtimeSec: null,
+    lastPushFile: null,
+    lastPushCouldNotResume: false,
+    unconsumedAlertedAt: null,
+    consecutivePushesWithoutProgress: 0,
+    totalPushes,
+  };
+}
+
 function createInitialState() {
   return {
     version: '1.0',
@@ -613,13 +628,14 @@ function createInitialState() {
       abCardMtimeSec: null,
     },
     roles: {
-      hub: { lastPushAt: null, lastPushThreadWrite: null, consecutivePushesWithoutProgress: 0, totalPushes: 0 },
-      ab: { lastPushAt: null, lastPushThreadWrite: null, consecutivePushesWithoutProgress: 0, totalPushes: 0 },
-      c: { lastPushAt: null, lastPushThreadWrite: null, consecutivePushesWithoutProgress: 0, totalPushes: 0 },
+      hub: createInitialRoleState(0),
+      ab: createInitialRoleState(0),
+      c: createInitialRoleState(0),
     },
     stageFixes: {},
     passedStages: {},
     stageTimers: {},
+    runtimeEnv: null,
     processedHandoffs: [],
     activeCrossAgent: null,
     rotations: [],
@@ -630,13 +646,18 @@ function loadOrCreateState(statePath) {
   if (fs.existsSync(statePath)) {
     const parsed = JSON.parse(fs.readFileSync(statePath, 'utf8'));
     const base = createInitialState();
+    const mergedRoles = { ...base.roles };
+    for (const [r, val] of Object.entries(parsed.roles || {})) {
+      mergedRoles[r] = { ...createInitialRoleState(0), ...(val || {}) };
+    }
     return {
       ...base,
       ...parsed,
-      roles: { ...base.roles, ...(parsed.roles || {}) },
+      roles: mergedRoles,
       stageFixes: parsed.stageFixes || {},
       passedStages: parsed.passedStages || {},
       stageTimers: parsed.stageTimers || {},
+      runtimeEnv: parsed.runtimeEnv || null,
       processedHandoffs: Array.isArray(parsed.processedHandoffs) ? parsed.processedHandoffs : [],
       rotations: Array.isArray(parsed.rotations) ? parsed.rotations : [],
     };
@@ -916,6 +937,8 @@ function resolveRoleThreads(config, state, idleThreshold, maxNoProgress) {
         status: info.idleSeconds < idleThreshold ? 'WORKING' : 'STOPPED',
         idleSeconds: info.idleSeconds,
         lastWrite: info.lastWrite,
+        mtimeSec: info.mtimeSec ?? null,
+        mtimeMs: info.mtimeMs ?? null,
         size: info.size,
         lastPushThreadWrite: roleState.lastPushThreadWrite || null,
         consecutivePushesWithoutProgress: roleState.consecutivePushesWithoutProgress || 0,
@@ -1470,12 +1493,234 @@ function formatCountsCn(raw) {
   return String(raw || '-');
 }
 
+function probeRuntimeEnvironment(config) {
+  const runtime = normalizeRuntime(config?.runtime);
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (runtime === 'wsl') {
+    try {
+      const res = runWslBash(
+        config?.wslDistro || '',
+        'cat /proc/sys/kernel/random/boot_id 2>/dev/null || true; echo "---"; cat /proc/uptime 2>/dev/null || true',
+        [],
+        undefined,
+        8000,
+      );
+      if (res.status !== 0) return null;
+      const parts = String(res.stdout || '').split('---');
+      const bootId = (parts[0] || '').trim() || null;
+      const uptimeRaw = parseFloat(((parts[1] || '').trim().split(/\s+/)[0]) || '');
+      const uptimeSec = Number.isNaN(uptimeRaw) ? null : Math.max(0, Math.floor(uptimeRaw));
+      if (!bootId && uptimeSec === null) return null;
+      return {
+        runtime,
+        bootId,
+        uptimeSec,
+        bootEpochSec: uptimeSec !== null ? nowSec - uptimeSec : null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  let bootId = null;
+  if (runtime === 'posix' && fs.existsSync('/proc/sys/kernel/random/boot_id')) {
+    try {
+      bootId = fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() || null;
+    } catch {
+      bootId = null;
+    }
+  }
+  const uptimeSec = Math.max(0, Math.floor(os.uptime()));
+  return {
+    runtime,
+    bootId,
+    uptimeSec,
+    bootEpochSec: nowSec - uptimeSec,
+  };
+}
+
+function evaluateRuntimeRestart(ctx, state, roles) {
+  const curr = probeRuntimeEnvironment(ctx.config);
+  if (!curr) {
+    return {
+      available: false,
+      detected: false,
+      acknowledged: false,
+      runtime: normalizeRuntime(ctx.config?.runtime),
+      rolesNeedingWake: [],
+      message: null,
+    };
+  }
+
+  const nowMs = Date.now();
+  const nowIso = formatIsoOffset(new Date(nowMs));
+  const prev = state.runtimeEnv;
+
+  if (!prev || !prev.observedAt || prev.runtime !== curr.runtime) {
+    state.runtimeEnv = {
+      ...curr,
+      observedAt: nowIso,
+      restartDetectedAt: null,
+      restartAcknowledgedAt: null,
+      previousBootId: null,
+      previousUptimeSec: null,
+    };
+    saveState(ctx.statePath, state);
+    return {
+      available: true,
+      detected: false,
+      acknowledged: false,
+      ...curr,
+      uptimeCn: formatDurationCn(curr.uptimeSec),
+      rolesNeedingWake: [],
+      message: null,
+    };
+  }
+
+  const bootIdChanged = Boolean(prev.bootId && curr.bootId && prev.bootId !== curr.bootId);
+  const uptimeReset = prev.uptimeSec !== null && curr.uptimeSec !== null && (curr.uptimeSec + 60) < prev.uptimeSec;
+  const bootEpochJumped = prev.bootEpochSec !== null && curr.bootEpochSec !== null && (curr.bootEpochSec - prev.bootEpochSec) > 120;
+  const justRestarted = bootIdChanged || uptimeReset || bootEpochJumped;
+
+  let dirtyState = false;
+  if (justRestarted) {
+    state.runtimeEnv = {
+      ...curr,
+      observedAt: nowIso,
+      restartDetectedAt: nowIso,
+      restartAcknowledgedAt: null,
+      previousBootId: prev.bootId || null,
+      previousUptimeSec: prev.uptimeSec ?? null,
+    };
+    dirtyState = true;
+    appendRelayLog(ctx.logPath, `ENV_RESTART_DETECTED runtime=${curr.runtime} prev_boot=${prev.bootId || '-'} new_boot=${curr.bootId || '-'} prev_uptime=${prev.uptimeSec ?? '-'} new_uptime=${curr.uptimeSec ?? '-'}`);
+  } else {
+    const prevObsMs = Date.parse(prev.observedAt);
+    const shouldRefresh = Number.isNaN(prevObsMs) || (nowMs - prevObsMs) >= 60000;
+    state.runtimeEnv = {
+      ...prev,
+      ...curr,
+      observedAt: shouldRefresh ? nowIso : prev.observedAt,
+    };
+    if (shouldRefresh) dirtyState = true;
+  }
+
+  const detectedAt = state.runtimeEnv.restartDetectedAt || null;
+  let acknowledgedAt = state.runtimeEnv.restartAcknowledgedAt || null;
+  const detectedMs = detectedAt ? Date.parse(detectedAt) : NaN;
+
+  const boundEntries = Object.entries(roles || {}).filter(([, info]) => Boolean(info?.uuid));
+  const rolesNeedingWake = [];
+  if (detectedAt && !acknowledgedAt && !Number.isNaN(detectedMs)) {
+    const detectedSec = Math.floor(detectedMs / 1000);
+    for (const [r, info] of boundEntries) {
+      if (!info.mtimeSec || info.mtimeSec < detectedSec) {
+        rolesNeedingWake.push({
+          role: r,
+          roleLabel: formatRoleLabelCn(r),
+          threadName: info.threadName || '',
+          lastWrite: info.lastWrite || null,
+        });
+      }
+    }
+    if (boundEntries.length > 0 && rolesNeedingWake.length === 0) {
+      acknowledgedAt = nowIso;
+      state.runtimeEnv.restartAcknowledgedAt = acknowledgedAt;
+      dirtyState = true;
+    }
+  }
+
+  if (dirtyState) {
+    saveState(ctx.statePath, state);
+  }
+
+  const activeAlert = Boolean(detectedAt && !acknowledgedAt);
+  const envLabel = curr.runtime === 'wsl' ? 'WSL' : (curr.runtime === 'windows' ? 'Windows 宿主机' : 'Linux/macOS 宿主');
+  const uptimeCn = formatDurationCn(curr.uptimeSec);
+  const wakeTargets = rolesNeedingWake.length > 0
+    ? rolesNeedingWake.map((x) => `\`${x.threadName || x.roleLabel}\``).join(' 和 ')
+    : '`总控中枢 (Codex-Hub)` 和 `实施专席 (AB)`';
+  const message = activeAlert
+    ? `检测到 ${envLabel} 刚刚重启（当前仅运行 ${uptimeCn}），之前挂载的 Codex 标签页大概率已掉线，请先把 ${wakeTargets} 窗口都点活一次再继续推进。`
+    : null;
+
+  return {
+    available: true,
+    detected: Boolean(detectedAt),
+    acknowledged: Boolean(acknowledgedAt),
+    activeAlert,
+    detectedAt,
+    acknowledgedAt,
+    ...curr,
+    uptimeCn,
+    previousUptimeSec: state.runtimeEnv.previousUptimeSec ?? null,
+    rolesNeedingWake,
+    message,
+  };
+}
+
+function detectUnconsumedPushes(roles, state, pollIntervalSec = 180) {
+  const nowMs = Date.now();
+  const minWaitSec = Math.max(30, Number(pollIntervalSec) || 180);
+  const items = [];
+
+  for (const [role, roleState] of Object.entries(state?.roles || {})) {
+    if (!roleState || !roleState.lastPushAt) continue;
+    if (roleState.unconsumedAlertedAt) continue;
+
+    let pushedMs = Number(roleState.lastPushEpochMs);
+    if (!pushedMs || Number.isNaN(pushedMs)) {
+      const parsed = Date.parse(roleState.lastPushAt);
+      pushedMs = Number.isNaN(parsed) ? 0 : parsed;
+    }
+    if (!pushedMs) continue;
+
+    const elapsedSec = Math.max(0, Math.round((nowMs - pushedMs) / 1000));
+    if (elapsedSec < minWaitSec) continue;
+
+    const info = roles?.[role];
+    const hasWrittenSincePush = Boolean(
+      info && (
+        (info.mtimeSec && roleState.lastPushThreadMtimeSec && info.mtimeSec > roleState.lastPushThreadMtimeSec) ||
+        (info.lastWrite && roleState.lastPushThreadWrite && info.lastWrite !== roleState.lastPushThreadWrite)
+      ),
+    );
+    if (hasWrittenSincePush) continue;
+
+    const roleLabel = formatRoleLabelCn(role);
+    const displayName = info?.threadName || roleLabel;
+    const elapsedCn = formatDurationCn(elapsedSec);
+    const couldNotResume = Boolean(roleState.lastPushCouldNotResume);
+    const resumeHint = couldNotResume ? '，且投递时提示 could not resume thread' : '';
+    items.push({
+      role,
+      roleLabel,
+      threadName: info?.threadName || '',
+      displayName,
+      uuid: info?.uuid || '',
+      pushedAt: roleState.lastPushAt,
+      elapsedSincePushSec: elapsedSec,
+      elapsedSincePushCn: elapsedCn,
+      lastPushFile: roleState.lastPushFile || null,
+      lastPushThreadWrite: roleState.lastPushThreadWrite || null,
+      currentLastWrite: info?.lastWrite || null,
+      couldNotResume,
+      message: `消息已入队但「${displayName}」疑似未挂载/未唤醒（推送后已过 ${elapsedCn} 仍无新写入${resumeHint}），请切过去点一下。`,
+    });
+  }
+
+  return items;
+}
+
 function buildTelemetryLine(st) {
   const roleEntries = Object.entries(st.roles || {});
   const workerEntries = roleEntries.filter(([name, info]) =>
     name !== 'hub' && (info.status === 'WORKING' || info.status === 'STOPPED'));
   const allLive = roleEntries.filter(([, info]) => info.status === 'WORKING' || info.status === 'STOPPED');
   const hasBreaker = Boolean(st.breakers?.fixCapBreaker || (st.breakers?.noProgressRoles?.length || 0) > 0);
+  const hasEnvRestart = Boolean(st.environmentRestart?.detected && !st.environmentRestart?.acknowledged);
+  const unconsumedPushes = Array.isArray(st.unconsumedPushes) ? st.unconsumedPushes : [];
+  const hasUnconsumed = unconsumedPushes.length > 0;
   const pendingEvents = Array.isArray(st.pendingEvents) ? st.pendingEvents : [];
   const hasPendingEvents = pendingEvents.length > 0;
   const hasAudit = Boolean(st.activeCrossAgent);
@@ -1485,6 +1730,8 @@ function buildTelemetryLine(st) {
 
   let title = '◌ **待命观察中**';
   if (hasBreaker) title = '■ **自动推进已暂停**';
+  else if (hasEnvRestart) title = '▲ **检测到运行环境刚重启**';
+  else if (hasUnconsumed) title = '▲ **投递消息疑似未消费**';
   else if (hasPendingEvents) title = '◆ **收到事件信号**';
   else if (hasAudit) title = '◐ **独立审计进行中**';
   else if (hasHandoff) title = '◆ **发现待转交任务**';
@@ -1515,6 +1762,12 @@ function buildTelemetryLine(st) {
   if (hasBreaker) {
     const evExtra = hasPendingEvents ? `（另有 ${pendingEvents.length} 条待处理事件信号）` : '';
     detailLine = `> 触发安全熔断保护，自动中继已暂停，等待你确认处理方式${evExtra}。`;
+  } else if (hasEnvRestart) {
+    detailLine = `> ${st.environmentRestart.message}`;
+  } else if (hasUnconsumed) {
+    const first = unconsumedPushes[0];
+    const extraTxt = unconsumedPushes.length > 1 ? `（另有 ${unconsumedPushes.length - 1} 个会话待唤醒）` : '';
+    detailLine = `> ${first.message}${extraTxt}`;
   } else if (hasPendingEvents) {
     const latestEv = pendingEvents[pendingEvents.length - 1];
     const roleCn = formatRoleLabelCn(latestEv.role || 'ab');
@@ -1680,10 +1933,13 @@ function collectStatus(ctx) {
   const pendingEvents = allEvents.filter((e) => !e.acked);
   const recentEvents = allEvents.slice(-10);
 
+  const pollIntervalSec = config.thresholds?.pollIntervalSec ?? 180;
   const pipeline = parsePipelineSummary(boardDoc.taskRows, state, state.activeCrossAgent, boardDoc.waveColIdx);
   const waves = parseWaveSummary(boardDoc.taskRows, config, state, state.activeCrossAgent, boardDoc.waveColIdx);
   const contextBudgets = inspectContextBudgets(ctx);
   const activeStageTimer = resolveActiveStageTimer(pipeline, state);
+  const environmentRestart = evaluateRuntimeRestart(ctx, state, roles);
+  const unconsumedPushes = detectUnconsumedPushes(roles, state, pollIntervalSec);
   const processAudit = ctx._checkProcs ? collectProcessSnapshot(config, ctx._procFlags || {}) : undefined;
 
   const statusObj = {
@@ -1706,6 +1962,9 @@ function collectStatus(ctx) {
     recentEvents,
     stageTimers: state.stageTimers || {},
     activeStageTimer,
+    runtimeEnv: state.runtimeEnv || null,
+    environmentRestart,
+    unconsumedPushes,
     contextBudgets,
     ...(processAudit !== undefined ? { processAudit } : {}),
     boardTaskRows,
@@ -1752,6 +2011,15 @@ function cmdStatus(flags) {
     console.log('--- worktrees ---');
     for (const wt of st.worktrees) {
       console.log(`WORKTREE ${wt.id} (${wt.source}): exists=${wt.exists} branch=${wt.branch ?? '-'} HEAD=${wt.headShort ?? '-'} DIRTY=${wt.dirtyCount ?? '-'} path=${wt.path}`);
+    }
+  }
+  if (st.environmentRestart?.detected && !st.environmentRestart?.acknowledged) {
+    console.log(`ENV_RESTART_WARNING: ${st.environmentRestart.message}`);
+  }
+  if (Array.isArray(st.unconsumedPushes) && st.unconsumedPushes.length > 0) {
+    console.log('--- unconsumed pushes ---');
+    for (const u of st.unconsumedPushes) {
+      console.log(`UNCONSUMED_${u.role.toUpperCase()}: ${u.message}`);
     }
   }
   if (st.processAudit) {
@@ -2019,16 +2287,26 @@ exit \${PIPESTATUS[0]}
   fs.writeFileSync(path.join(archiveDir, archiveName), rawMsg, 'utf8');
 
   const hadProgress = st.changedSinceLastSnapshot || !state.lastObservedSnapshot.boardMtimeSec;
+  const couldNotResume = /could\s+not\s+resume\s+thread|thread\s+not\s+loaded|failed\s+to\s+resume|unable\s+to\s+resume/i.test(output);
   roleState.lastPushAt = formatIsoOffset();
+  roleState.lastPushEpochMs = Date.now();
   roleState.lastPushThreadWrite = roleInfo.lastWrite;
+  roleState.lastPushThreadMtimeSec = roleInfo.mtimeSec ?? null;
+  roleState.lastPushFile = path.basename(msgPath);
+  roleState.lastPushCouldNotResume = couldNotResume;
+  roleState.unconsumedAlertedAt = null;
   roleState.totalPushes = (roleState.totalPushes || 0) + 1;
   roleState.consecutivePushesWithoutProgress = hadProgress ? 1 : (roleState.consecutivePushesWithoutProgress || 0) + 1;
   state.roles[role] = roleState;
   state.lastObservedSnapshot = st.snapshot;
   saveState(ctx.statePath, state);
 
+  if (couldNotResume) {
+    const displayName = roleInfo.threadName || formatRoleLabelCn(role);
+    console.warn(`RESUME_WARNING: 消息已入队但投递返回线程未恢复提示，若 1 个巡检周期后「${displayName}」仍无新写入，将触发未消费提醒。`);
+  }
   const reason = flags.reason || 'anti-stall-push';
-  appendRelayLog(ctx.logPath, `PUSH ${role.toUpperCase()} file=${path.basename(msgPath)} exit=0 thread_last_write=${roleInfo.lastWrite} no_prog_count=${roleState.consecutivePushesWithoutProgress} reason=${reason}`);
+  appendRelayLog(ctx.logPath, `PUSH ${role.toUpperCase()} file=${path.basename(msgPath)} exit=0 thread_last_write=${roleInfo.lastWrite} could_not_resume=${couldNotResume} no_prog_count=${roleState.consecutivePushesWithoutProgress} reason=${reason}`);
 }
 
 function cmdBind(flags) {
@@ -2046,7 +2324,7 @@ function cmdBind(flags) {
       ctx.config.threadMatchers[role] = flags.match.trim();
     }
     fs.writeFileSync(ctx.configPath, JSON.stringify(ctx.config, null, 2) + '\n', 'utf8');
-    state.roles[role] = { lastPushAt: null, lastPushThreadWrite: null, consecutivePushesWithoutProgress: 0, totalPushes: state.roles[role]?.totalPushes || 0 };
+    state.roles[role] = createInitialRoleState(state.roles[role]?.totalPushes || 0);
     saveState(ctx.statePath, state);
     appendRelayLog(ctx.logPath, `BIND_AUTO role=${role.toUpperCase()} matcher=${JSON.stringify(ctx.config.threadMatchers[role] || '')}`);
     console.log(JSON.stringify({ ok: true, mode: 'auto', role, matcher: ctx.config.threadMatchers[role] || '' }, null, 2));
@@ -2077,7 +2355,7 @@ function cmdBind(flags) {
 
   ctx.config.threads[role] = newTid;
   fs.writeFileSync(ctx.configPath, JSON.stringify(ctx.config, null, 2) + '\n', 'utf8');
-  state.roles[role] = { lastPushAt: null, lastPushThreadWrite: null, consecutivePushesWithoutProgress: 0, totalPushes: state.roles[role]?.totalPushes || 0 };
+  state.roles[role] = createInitialRoleState(state.roles[role]?.totalPushes || 0);
   state.rotations.push({ role, oldTid, newTid, reason: `bind-${mode}`, at: formatIsoOffset() });
   saveState(ctx.statePath, state);
   appendRelayLog(ctx.logPath, `BIND_${mode.toUpperCase()} role=${role.toUpperCase()} old=${oldTid || '-'} new=${newTid}${matchedName ? ` name=${JSON.stringify(matchedName)}` : ''}`);
@@ -2174,7 +2452,7 @@ codex exec -C "$CWD" -s "$SANDBOX" -a never --json -
   const oldTid = ctx.config.threads?.[role] || '';
   ctx.config.threads = { ...(ctx.config.threads || {}), [role]: threadId };
   fs.writeFileSync(ctx.configPath, JSON.stringify(ctx.config, null, 2) + '\n', 'utf8');
-  state.roles[role] = { lastPushAt: null, lastPushThreadWrite: null, consecutivePushesWithoutProgress: 0, totalPushes: state.roles[role]?.totalPushes || 0 };
+  state.roles[role] = createInitialRoleState(state.roles[role]?.totalPushes || 0);
   state.rotations.push({ role, oldTid, newTid: threadId, reason: 'spawn-fresh', at: formatIsoOffset() });
   saveState(ctx.statePath, state);
   appendRelayLog(ctx.logPath, `SPAWN_THREAD role=${role.toUpperCase()} sandbox=${sandbox} old=${oldTid || '-'} new=${threadId}`);
@@ -2278,7 +2556,7 @@ function cmdState(flags, action) {
     const newTid = flags.thread.toLowerCase();
     ctx.config.threads = { ...(ctx.config.threads || {}), [role]: newTid };
     fs.writeFileSync(ctx.configPath, JSON.stringify(ctx.config, null, 2) + '\n', 'utf8');
-    state.roles[role] = { lastPushAt: null, lastPushThreadWrite: null, consecutivePushesWithoutProgress: 0, totalPushes: state.roles[role]?.totalPushes || 0 };
+    state.roles[role] = createInitialRoleState(state.roles[role]?.totalPushes || 0);
     state.rotations.push({ role, oldTid, newTid, reason: flags.reason || 'session-rotation', at: formatIsoOffset() });
     saveState(ctx.statePath, state);
     appendRelayLog(ctx.logPath, `ROTATE_THREAD role=${role.toUpperCase()} old=${oldTid || '-'} new=${newTid} reason=${flags.reason || 'session-rotation'}`);
@@ -2291,6 +2569,37 @@ function cmdState(flags, action) {
     state.roles[role] = { ...(state.roles[role] || {}), consecutivePushesWithoutProgress: 0 };
     saveState(ctx.statePath, state);
     console.log(JSON.stringify({ ok: true, role, consecutivePushesWithoutProgress: 0 }, null, 2));
+    return;
+  }
+
+  if (action === 'ack-alert') {
+    const kind = String(flags.kind || 'all').trim().toLowerCase();
+    if (!['all', 'restart', 'unconsumed'].includes(kind)) {
+      throw new Error(`Invalid ack-alert --kind "${kind}". Expected: all, restart, or unconsumed.`);
+    }
+    const nowIso = formatIsoOffset();
+    let restartAcknowledged = false;
+    const acknowledgedRoles = [];
+
+    if (kind === 'all' || kind === 'restart') {
+      if (state.runtimeEnv) {
+        state.runtimeEnv.restartAcknowledgedAt = nowIso;
+        restartAcknowledged = true;
+      }
+    }
+    if (kind === 'all' || kind === 'unconsumed') {
+      const targetRole = flags.role ? normalizeRoleName(flags.role, 'ack-alert --role') : null;
+      const roleList = targetRole ? [targetRole] : Object.keys(state.roles || {});
+      for (const r of roleList) {
+        if (state.roles[r]) {
+          state.roles[r].unconsumedAlertedAt = nowIso;
+          acknowledgedRoles.push(r);
+        }
+      }
+    }
+    saveState(ctx.statePath, state);
+    appendRelayLog(ctx.logPath, `ACK_ALERT kind=${kind} roles=${acknowledgedRoles.join(',') || '-'} restart=${restartAcknowledged}`);
+    console.log(JSON.stringify({ ok: true, kind, acknowledgedRoles, restartAcknowledged }, null, 2));
     return;
   }
 
@@ -2682,6 +2991,12 @@ function runAnalyze(ctx) {
   const pendingEvents = readEvents(ctx.eventsPath).filter((e) => !e.acked);
   if (pendingEvents.length > 0) {
     addWarning('PENDING_EVENTS', '.agents/relay/events.jsonl', null, `存在 ${pendingEvents.length} 条未确认事件信号，请及时查看并 ack。`);
+  }
+
+  const pollIntervalSec = ctx.config.thresholds?.pollIntervalSec ?? 180;
+  const unconsumedPushes = detectUnconsumedPushes(roles, state, pollIntervalSec);
+  for (const u of unconsumedPushes) {
+    addWarning('UNCONSUMED_PUSH', '.agents/relay/relay-state.json', null, u.message);
   }
 
   if (ctx.config.runtime === 'wsl') {

@@ -650,3 +650,71 @@ test('v1.3.2 WSL stability checks: analyze detects /mnt DrvFS paths and doctor r
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('v1.3.3 resilience: unconsumed push echo alert and runtime environment restart detection work', () => {
+  const tmp = makeTempDir('sdd-v133-test-');
+  try {
+    const initRes = runNode([CLI_PATH, 'init', '--project', tmp, '--runtime', 'windows', '--name', 'EchoApp', '--batch', 'PKG-ECHO-01']);
+    assert.equal(initRes.status, 0, initRes.stderr);
+
+    const statePath = path.join(tmp, '.agents', 'relay', 'relay-state.json');
+
+    // Part A: Unconsumed push alert after 1 poll interval (with couldNotResume hint)
+    const stateA = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    stateA.roles.ab = {
+      ...stateA.roles.ab,
+      lastPushAt: new Date(Date.now() - 220000).toISOString(),
+      lastPushEpochMs: Date.now() - 220000,
+      lastPushThreadWrite: '2026-11-21 17:55:00',
+      lastPushThreadMtimeSec: 1795254900,
+      lastPushFile: 'msg-ab-001.txt',
+      lastPushCouldNotResume: true,
+      unconsumedAlertedAt: null,
+      totalPushes: 1,
+    };
+    fs.writeFileSync(statePath, JSON.stringify(stateA, null, 2) + '\n', 'utf8');
+
+    const stUnconsumed = JSON.parse(runNode([CLI_PATH, 'status', '--project', tmp, '--json']).stdout);
+    assert.equal(stUnconsumed.unconsumedPushes.length, 1);
+    assert.equal(stUnconsumed.unconsumedPushes[0].role, 'ab');
+    assert.equal(stUnconsumed.unconsumedPushes[0].couldNotResume, true);
+    assert.match(stUnconsumed.telemetryLine, /▲ \*\*投递消息疑似未消费\*\*/);
+    assert.match(stUnconsumed.telemetryLine, /疑似未挂载\/未唤醒/);
+    assert.match(stUnconsumed.telemetryLine, /could not resume thread/);
+    assert.match(stUnconsumed.telemetryLine, /\r?\n>\r?\n>/);
+
+    const ackUnconsumed = JSON.parse(runNode([CLI_PATH, 'state', 'ack-alert', '--project', tmp, '--kind', 'unconsumed', '--role', 'ab']).stdout);
+    assert.equal(ackUnconsumed.ok, true);
+    assert.deepEqual(ackUnconsumed.acknowledgedRoles, ['ab']);
+
+    const stAfterUnconsumedAck = JSON.parse(runNode([CLI_PATH, 'status', '--project', tmp, '--json']).stdout);
+    assert.equal(stAfterUnconsumedAck.unconsumedPushes.length, 0);
+
+    // Part B: Runtime environment restart detection (bootId / uptime jump)
+    const stateB = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    assert.ok(stateB.runtimeEnv && stateB.runtimeEnv.observedAt, 'Expected baseline runtimeEnv recorded by status');
+    stateB.runtimeEnv.bootId = 'old-boot-0000';
+    stateB.runtimeEnv.uptimeSec = 9999999;
+    stateB.runtimeEnv.bootEpochSec = Math.floor(Date.now() / 1000) - 9999999;
+    stateB.runtimeEnv.restartDetectedAt = null;
+    stateB.runtimeEnv.restartAcknowledgedAt = null;
+    fs.writeFileSync(statePath, JSON.stringify(stateB, null, 2) + '\n', 'utf8');
+
+    const stRestart = JSON.parse(runNode([CLI_PATH, 'status', '--project', tmp, '--json']).stdout);
+    assert.equal(stRestart.environmentRestart.detected, true);
+    assert.equal(stRestart.environmentRestart.acknowledged, false);
+    assert.match(stRestart.telemetryLine, /▲ \*\*检测到运行环境刚重启\*\*/);
+    assert.match(stRestart.telemetryLine, /点活/);
+    assert.match(stRestart.telemetryLine, /\r?\n>\r?\n>/);
+
+    const ackRestart = JSON.parse(runNode([CLI_PATH, 'state', 'ack-alert', '--project', tmp, '--kind', 'restart']).stdout);
+    assert.equal(ackRestart.ok, true);
+    assert.equal(ackRestart.restartAcknowledged, true);
+
+    const stAfterRestartAck = JSON.parse(runNode([CLI_PATH, 'status', '--project', tmp, '--json']).stdout);
+    assert.equal(stAfterRestartAck.environmentRestart.acknowledged, true);
+    assert.equal(/▲ \*\*检测到运行环境刚重启\*\*/.test(stAfterRestartAck.telemetryLine), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

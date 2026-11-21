@@ -1,5 +1,15 @@
 # 更新日志（CHANGELOG）
 
+## [1.3.3] - 2026-11-21
+
+### 防假死闭环升级（投递回声验收 + 环境重启感知 + 孤儿进程过滤）
+- **投递后「未消费」自动回声告警（`unconsumedPushes`）**：
+  - `relay.mjs send` 推送时记录精确 `lastPushEpochMs`、`lastPushThreadMtimeSec` 并识别输出中是否含 `could not resume thread` / `thread not loaded` 提示；
+  - `status` 与 `telemetryLine` 在超过 1 个巡检周期（`pollIntervalSec`，默认 180 秒）目标会话仍无新写入时，主动展示 `▲ **投递消息疑似未消费**` 明确提醒「消息已入队但 `<会话名>` 疑似未挂载/未唤醒，请切过去点一下」。
+- **WSL / 宿主环境重启感知（`environmentRestart`）**：
+  - `status` 探测运行环境 `boot_id` 与运行时长 `uptime` 持久化到 `relay-state.json` 的 `runtimeEnv`；一旦发现 WSL/宿主机刚重启，立即置顶输出 `▲ **检测到运行环境刚重启**` 提醒先将 `Codex-Hub` 与 `AB` 窗口点活，并在绑定角色全部恢复写入后自动消警（或通过 `relay.mjs state ack-alert` 手动确认）。
+- **协同 `procs` 孤儿进程过滤（`v1.3.1` 固化）**：与 `ppid` 血缘核查构成完整防假死三件套。
+
 ## [1.3.2] - 2026-11-21
 
 ### WSL2 与 Windows 宿主稳态体检护栏

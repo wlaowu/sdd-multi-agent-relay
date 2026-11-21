@@ -53,6 +53,7 @@
   "stageFixes": {},
   "passedStages": {},
   "stageTimers": {},
+  "runtimeEnv": null,
   "processedHandoffs": [],
   "activeCrossAgent": null,
   "rotations": []
@@ -61,6 +62,8 @@
 
 - **`stageFixes`**：记录每个阶段累计收到 `要求整改` 的次数（如 `{"T-01": 1}`）。达到 `thresholds.maxFixRounds`（默认 2）时，`status` 命令将返回 `fixCapBreaker: true`。
 - **`stageTimers`**：自动追踪每个阶段从 `start-review` / `event emit` 到 `finish-review` 的累计耗时、最近一次审核耗时（秒）与阶段状态。
+- **`runtimeEnv`**：记录最近观测到的运行环境启动指纹（`runtime`、`bootId`、`uptimeSec`、`bootEpochSec`、`restartDetectedAt`、`restartAcknowledgedAt`），用于第一时间感知 WSL/宿主机刚重启。
+- **`roles.<r>` 回声字段**：除 `lastPushAt`、`lastPushThreadWrite` 外，记录 `lastPushEpochMs`、`lastPushThreadMtimeSec`、`lastPushCouldNotResume` 与 `unconsumedAlertedAt`，用于在 1 个巡检周期后识别投递未消费的僵尸标签页。
 - **`.agents/relay/events.jsonl`**：零依赖事件信号总线追加日志，记录由 `relay.mjs event emit` 写入的结构化信号（`id`、`createdAt`、`role`、`type`、`task`、`sha`、`message`、`acked`、`ackedAt`）。
 - **`processedHandoffs`**：记录已完成转交并回传中枢的跨端报文标识（如 `tasks/R0-review.md:183` 或任务 ID），避免重复派单。
 - **`activeCrossAgent`**：记录当前正在进行的 Antigravity 子会话 ID、目标输出路径与开始时间；若服务中断，恢复时先查磁盘文件与 `manage_subagents`。
@@ -107,6 +110,7 @@ node relay.mjs status [--config <relay.json> | --project <dir>] [--compact] [--c
   - `hub` / `ab` / `c` 及自定义角色（如 `a` / `b`）的解析方式（`pinned` / `matcher` / `UNBOUND`）、会话标题、当前状态、`idle_seconds`、`last_write`；
   - `DISPATCH_BOARD.md` 最新状态表行与最近 5 条日志、`AB-codex.md` 最近标题、解析后的流水线阶段状态 `pipeline`、波次进度 `waves`（`currentWave` / `parallelReady` / `canParallelize`）；
   - 事件总线状态 `pendingEvents` / `recentEvents`、阶段计时 `stageTimers` / `activeStageTimer`、文档预算 `contextBudgets`；
+  - 运行环境重启感知 `environmentRestart`、投递未消费回声列表 `unconsumedPushes`；
   - 过滤掉 `processedHandoffs` 后的新增「发送到：Antigravity / 待转交」跨端列表；
   - Git `branch`、`HEAD`（完整与短 SHA）、`dirtyCount` 及 `worktrees[]`（所有显式配置或 `git worktree list` 自动发现的次级 Worktree 状态）；
   - 熔断标记：`noProgressBreaker`（哪些角色达到 `maxNoProgressPushes`）、`fixCapBreaker`（哪些阶段达到 `maxFixRounds`）、`activeCrossAgent`、`automationMode`。
@@ -135,6 +139,7 @@ node relay.mjs state [--config <relay.json> | --project <dir>] finish-review --t
 node relay.mjs state [--config <relay.json> | --project <dir>] mark-processed --handoff <id>
 node relay.mjs state [--config <relay.json> | --project <dir>] rotate-thread --role <role> --thread <new-uuid> [--reason <text>]
 node relay.mjs state [--config <relay.json> | --project <dir>] reset-pushes --role <role>
+node relay.mjs state [--config <relay.json> | --project <dir>] ack-alert [--kind <all|restart|unconsumed>] [--role <role>]
 ```
 
 ### 9. `notify` — 发送 Webhook 告警 / 完工通知

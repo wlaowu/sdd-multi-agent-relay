@@ -83,10 +83,11 @@ description: >-
 
 每次唤醒严格按以下优先级顺序检查并处置：
 
-1. **采集双端元数据、事件总线与波次状态**：
-   - 在目标项目目录下直接运行 `node "...\scripts\relay.mjs" status --json`（或显式传 `--project` / `--config`）；自动解析波次进度 `waves`（`currentWave` / `parallelReady`）、未确认事件 `pendingEvents`、阶段耗时 `stageTimers` / `activeStageTimer`、文档行数预算 `contextBudgets`、多 `git worktree` 及自定义角色名；
-   - 若存在待处理结构化事件（`pendingEvents` 非空），`telemetryLine` 会最高优先显示 `◆ **收到事件信号**`：先逐条核实事件（如 `review_ready`/`done`/`blocked`/`decision_needed`）并按相应流程处置后，再执行 `relay.mjs event ack --id <id>`（或 `--all`）确认消警；
-   - 若 `contextBudgets.overBudgetCount > 0` 或 `DISPATCH_BOARD.md` 调度日志冗长，执行 `relay.mjs compact --apply` 自动将历史日志归档至 `.agents/development/archive/` 并保留 1 行索引（绝不修改 `specs/`、`audits/` 或源码）；
+1. **采集双端元数据、运行环境健康与事件/波次状态**：
+   - 在目标项目目录下直接运行 `node "...\scripts\relay.mjs" status --json`（或显式传 `--project` / `--config`）；自动完成以下「防假死三件套」与全量态势探测：
+     - **WSL / 宿主环境重启感知（`environmentRestart`）**：探测环境运行时间与启动 ID，一旦发现刚重启过（`detected && !acknowledged`），`telemetryLine` 会最高优先展示 `▲ **检测到运行环境刚重启**`，第一时间提醒用户把 `Codex-Hub` 与 `AB` 两个窗口都点活一次再推进（处理后可执行 `relay.mjs state ack-alert --kind restart` 消警）；
+     - **投递未消费回声验收（`unconsumedPushes`）**：向 Codex 推完消息（尤其返回 `could not resume thread` 时）若过 1 个巡检周期（默认 180 秒）仍无新写入，`telemetryLine` 立即提醒「消息已入队但 `<会话名>` 疑似未挂载/未唤醒，请切过去点一下」（用户点活或确认后可用 `relay.mjs state ack-alert --kind unconsumed --role <role>` 消警）；
+     - **波次、事件与预算**：自动解析 `waves`、`pendingEvents`（优先核查后 `event ack`）、`stageTimers`、`contextBudgets`（超限执行 `compact --apply`）、多 `git worktree` 及自定义角色名；
    - 需要向用户提供可视化全景看板时，可运行 `relay.mjs ui --export <file.html>` 导出零外链离线中文驾驶舱网页，或运行 `relay.mjs ui --port 4317` 启动本地实时服务；
    - 若存在活跃子会话，调用 `manage_subagents{Action:"list"}` 检查子会话是否正常运行（防 `429`/崩溃静默空等）。
 

@@ -162,6 +162,8 @@ flowchart TD
 | **规则 d（双停且指向不明）** | `AB` 与 `HUB` 均停且看板状态模糊/疑有隐性阻塞 | 推 `HUB` 核对看板继续派发或明确写明阻塞原因与责任方 |
 | **规则 e（单方工作中静默）** | 任一方处于运行中（`idle_seconds < 180`） | 保持安静不打扰，仅在规则 a（`AB` 自身停于未完成任务且正在等待之外）例外 |
 | **后台长命令与孤儿进程甄别（`ppid` 溯源）** | 怀疑 `STOPPED` 会话仍在跑编译/测试子进程 | 必须运行 `relay.mjs procs --json`（或 `status --check-procs`）沿 `ppid` 溯源：仅当 `hasActiveCodexWorker=true`（仍挂在存活 `codex` 宿主下）才暂缓唤醒；孤儿进程（父 `codex` 已死、挂至 `PID 1`）不得阻断防停唤醒 |
+| **投递未消费回声验收（1 周期告警）** | 推完消息（尤其含 `could not resume thread`）满 `pollIntervalSec` 后目标线程仍无新写入 | 在 `status` 与 `telemetryLine` 立即输出 `▲ **投递消息疑似未消费**` 明确提醒用户切过去点活对应会话，不再默默空等；处理后可 `state ack-alert --kind unconsumed` 消警 |
+| **WSL / 宿主环境重启感知** | 探测到 `boot_id` 变化或运行时间 `uptime` 缩短回退 | 第一时间输出 `▲ **检测到运行环境刚重启**` 提醒用户将 `Codex-Hub` 与 `AB` 窗口点活；全部绑定角色产生新写入后自动消警（或手动 `state ack-alert --kind restart`） |
 
 ---
 
