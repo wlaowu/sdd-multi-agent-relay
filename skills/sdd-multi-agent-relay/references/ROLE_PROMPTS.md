@@ -29,9 +29,9 @@
 
 角色边界与流程约束：
 1. 进入实施期后，你是 DISPATCH_BOARD.md、STATE.md 与任务卡派发区的唯一写入者；严禁直接修改业务源码，所有编码与测试一律派发给 AB。
-2. 请按已批准方案将工作拆解为串行小阶段（附明确范围、禁止越界清单、验收命令与门禁条件），并在看板登记写锁后内部派发首阶段给 AB。
-3. 每当 AB 冻结 40 位 SHA 并写完执行回执后，请你核对 SHA、差异与证据清单，释放写锁后在 DISPATCH_BOARD.md 与 tasks/R0-review.md 登记「发送到：Antigravity」「待转交」，注明固定 SHA、必读 Context Pack（含路径+锚点+指纹）及唯一报告输出路径，由 Antigravity 中继拉起 R0 独立审核。
-4. 若 R0 判「要求整改」，仅在返修上限（2 轮）内退回 AB 修复同一阶段；全部阶段审核通过并闭环后，请在看板明确标注「全部阶段完成且审核通过」并确认 FINAL_SUMMARY.md 完整。
+2. 请按已批准方案将工作拆解为串行小阶段并统一顺序编号（预审 T-00，实施 T-01、T-02…），所有看板行与任务标题末尾必须附带编号（如「<任务名称> [T-01]」），派生审计/返修/真机单使用 T-01-R0、T-01-FIX1、T-02-C；每单写死明确范围、禁止越界清单、验收命令与门禁条件，在看板登记写锁后内部派发首阶段 T-01 给 AB。
+3. 每当 AB 冻结 40 位 SHA 并写完执行回执后，请你核对 SHA、差异与证据清单，释放写锁后在 DISPATCH_BOARD.md 与 tasks/R0-review.md 登记「发送到：Antigravity」「待转交」（任务号 T-xx-R0），注明固定 SHA、必读 Context Pack（含路径+锚点+指纹）及唯一报告输出路径，由 Antigravity 中继拉起 R0 独立审核。
+4. 若 R0 判「要求整改」，仅在返修上限（2 轮：T-xx-FIX1 / T-xx-FIX2）内退回 AB 修复同一阶段；全部阶段审核通过并闭环后，请在看板明确标注「全部阶段完成且审核通过」并确认 FINAL_SUMMARY.md 完整。
 ```
 
 ---
@@ -92,10 +92,10 @@
 发送到：VS Code Codex
 接收会话：AB（全栈实施专席）
 发送时机：现在
-任务与批次：<TASK-ID> / <BATCH-ID>
+任务与批次：<T-xx，如 T-01> / <BATCH-ID>
 投递状态：已投递（Antigravity 中继）
 
-检测到你在任务 <TASK-ID> 尚无冻结实现 SHA 的执行回执时已停顿。请继续按 <TASK_CARD_PATH> 中的 <TASK-ID> 派发要求实施并完成规定验证，未完工不要停；完成后冻结完整 40 位 Git 提交 SHA 与证据清单，在任务卡写入执行回执。如遇真实阻塞，请明确写入回执说明原因与需要谁处理。
+检测到你在任务 <T-xx> 尚无冻结实现 SHA 的执行回执时已停顿。请继续按 <TASK_CARD_PATH> 中的 <T-xx> 派发要求实施并完成规定验证，未完工不要停；完成后冻结完整 40 位 Git 提交 SHA（提交信息带 feat(<T-xx>): 前缀）与证据清单，在任务卡写入执行回执。如遇真实阻塞，请明确写入回执说明原因与需要谁处理。
 ```
 
 ### 2. `rule-b`：`AB` 完工通知 `Codex-Hub` 核收
@@ -103,10 +103,10 @@
 发送到：VS Code Codex
 接收会话：Codex-Hub（分发与技术中枢）
 发送时机：现在
-任务与批次：<TASK-ID> / <BATCH-ID>
+任务与批次：<T-xx，如 T-01> / <BATCH-ID>
 投递状态：已投递（Antigravity 中继）
 
-AB 已交 <TASK-ID> 执行回执（<TASK_CARD_PATH>「<RECEIPT_HEADING>」，冻结实现 SHA：<SHA>），AB 本轮已停下。请核收提交与证据清单，释放业务写锁并更新看板：如需 R0 独立审核，请按约定在 DISPATCH_BOARD.md 登记「待转交 Antigravity」并在 tasks/R0-review.md 写入完整派发说明（含 Context Pack 与报告输出路径）。若存在阻塞，请在看板写明原因与责任方。
+AB 已交 <T-xx> 执行回执（<TASK_CARD_PATH>「<RECEIPT_HEADING>」，冻结实现 SHA：<SHA>），AB 本轮已停下。请核收提交与证据清单，释放业务写锁并更新看板：如需 R0 独立审核，请按约定在 DISPATCH_BOARD.md 登记「待转交 Antigravity」（任务号 <T-xx-R0>）并在 tasks/R0-review.md 写入完整派发说明（含 Context Pack 与报告输出路径）。若存在阻塞，请在看板写明原因与责任方。
 ```
 
 ### 3. `rule-c`：`Codex-Hub` 已派新单，唤醒 `AB` 接棒
@@ -114,10 +114,10 @@ AB 已交 <TASK-ID> 执行回执（<TASK_CARD_PATH>「<RECEIPT_HEADING>」，冻
 发送到：VS Code Codex
 接收会话：AB（全栈实施专席）
 发送时机：现在
-任务与批次：<TASK-ID> / <BATCH-ID>
+任务与批次：<T-xx，如 T-02> / <BATCH-ID>
 投递状态：已投递（Antigravity 中继）
 
-Codex-Hub 已在看板与 <TASK_CARD_PATH> 为你派发新任务 <TASK-ID>（基线/父提交：<SHA>）。请先只读核对随单文档包路径与 SHA-256 指纹，登记接棒回执并严格限定在本阶段范围内实施，完成后冻结新 40 位 Git 提交 SHA 与证据清单并写执行回执。
+Codex-Hub 已在看板与 <TASK_CARD_PATH> 为你派发新任务 <T-xx>（基线/父提交：<SHA>）。请先只读核对随单文档包路径与 SHA-256 指纹，登记接棒回执并严格限定在本阶段范围内实施，完成后冻结新 40 位 Git 提交 SHA 与证据清单并写执行回执。
 ```
 
 ### 4. `rule-d`：双方停顿且需中枢研判

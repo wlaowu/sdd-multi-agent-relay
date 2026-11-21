@@ -114,7 +114,8 @@ function formatIsoOffset(date = new Date()) {
 
 function normalizeStageKey(taskId) {
   let key = String(taskId || '').trim();
-  key = key.replace(/[-_]?REVIEW$/i, '');
+  key = key.replace(/[-_]?(?:REVIEW|R0)$/i, '');
+  key = key.replace(/(\d)[-_]C$/i, '$1');
   key = key.replace(/[-_]?FIX\d+$/i, '');
   return key || String(taskId || 'UNKNOWN');
 }

@@ -59,10 +59,10 @@ description: >-
      node "...\scripts\relay.mjs" spawn --role hub
      ```
 
-3. **进入 Phase 1（方案 + 预审 + 一次性拍板）**：
+3. **进入 Phase 1–2（方案 + 预审 + 统一编号拆单与拍板）**：
    - 严格按 [DOC_STANDARDS.md](./references/DOC_STANDARDS.md) 与 [SPEC.md.template](./resources/SPEC.md.template) 引导 `Hub`（建议 `Model: "pro"`）写出 8 板块规范方案 `specs/<THEME>_SPEC_V0.1.md`（带 `V-xx` 验收矩阵与 `PD-xx` 决策清单）；
-   - 如为 L3 任务，拉起独立 `R0` 子会话（`Model: "pro"`，跨模型家族审计）做实施前预审，补齐反例后冻结版本；
-   - 请求用户一次性拍板 `PD-xx` 决策与**全程自动续推授权**（同时确认完工后是否自动关机与 Webhook 告警）。
+   - 如为 L3 任务，拉起独立 `R0` 子会话（`Model: "pro"`，跨模型家族审计）做实施前预审（固定单号 `T-00`），补齐反例后冻结版本；
+   - 请求用户一次性拍板 `PD-xx` 决策与**全程自动续推授权**（同时确认完工后是否自动关机与 Webhook 告警），交由 `Codex-Hub` 按**强制顺序编号规则（每个任务末尾带 `[T-xx]`，如 `T-01`、`T-02`…，派生 `T-01-R0` / `T-01-FIX1` / `T-02-C`）**拆单开跑。
 
 ---
 
