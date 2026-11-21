@@ -1,0 +1,39 @@
+{
+  "version": "1.0",
+  "projectName": "{{PROJECT_NAME}}",
+  "batchId": "{{BATCH_ID}}",
+  "tier": "{{TIER}}",
+  "runtime": "{{RUNTIME}}",
+  "wslDistro": "{{WSL_DISTRO}}",
+  "projectPath": "{{PROJECT_PATH}}",
+  "devDir": ".agents/development",
+  "relayDir": ".agents/relay",
+  "codexBin": "",
+  "gitBranch": "{{GIT_BRANCH}}",
+  "threads": {
+    "hub": "",
+    "ab": "",
+    "c": ""
+  },
+  "threadMatchers": {
+    "hub": "{{PROJECT_NAME}}-Codex-Hub",
+    "ab": "{{PROJECT_NAME}}-AB",
+    "c": "{{PROJECT_NAME}}-C"
+  },
+  "thresholds": {
+    "pollIntervalSec": 180,
+    "idleThresholdSec": 180,
+    "maxNoProgressPushes": 3,
+    "maxFixRounds": 2
+  },
+  "webhook": {
+    "enabled": false,
+    "type": "feishu",
+    "url": "",
+    "envUrl": "RELAY_WEBHOOK_URL"
+  },
+  "shutdownOnComplete": {
+    "enabled": false,
+    "delaySec": 120
+  }
+}

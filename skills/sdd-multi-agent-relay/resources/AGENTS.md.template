@@ -1,0 +1,30 @@
+# {{PROJECT_NAME}} 多会话协同规则（AGENTS.md）
+
+本项目采用 **「`0 + (2+3)` 规范驱动多 Agent 门禁工作流」**（批次：`{{BATCH_ID}}`，开发分支：`{{GIT_BRANCH}}`）。所有进入本仓库的 Codex / Antigravity 会话必须遵守以下约定：
+
+---
+
+## 1. 冷启动必读清单（禁止未读先写）
+
+每次开启新会话、换班接手或执行任何改动前，先只读核对磁盘真源：
+1. [STATE.md](./.agents/development/STATE.md) — 确认角色职责与唯一写入边界；
+2. [DISPATCH_BOARD.md](./.agents/development/DISPATCH_BOARD.md) — 确认当前所处阶段、独占写锁与最新日志；
+3. [specs/](./.agents/development/specs/) 下标记为 **`[已批准方案·本次执行依据]`** 的最新 Spec 与 [ISSUE_LEDGER.md](./.agents/development/ISSUE_LEDGER.md)；
+4. 对应任务卡（`.agents/development/tasks/*.md`）。
+
+---
+
+## 2. 角色隔离与单点写锁铁律
+
+- **`Codex-Hub`（分发与技术中枢）**：只读浏览代码与拆解阶段计划；实施期唯一可写 `STATE.md`、`DISPATCH_BOARD.md` 与 `tasks/*.md` 的「派发说明区」；**严禁直接修改业务源码或运行改变 Git 状态的构建命令**。
+- **`AB`（全栈实施与集成专席）**：**唯一业务代码写锁持有者**；严禁无指令越界修改下一阶段内容或修改 `audits/` 原件；每个阶段完工后**必须冻结完整 40 位 Git Commit SHA**，并写实执行回执（清楚区分已验证与未验证项，禁止虚报）。
+- **`C`（原生 / 真机环境验证专席）**：仅在里程碑真机门禁执行编译/端到端实测与填写实测回执，发现缺陷退回 `AB` 修复，**不直接改写源码**。
+- **`R0`（独立审计专席）**：主仓库严格只读，在隔离临时副本复测指定 40 位 SHA，只写 `audits/` 报告与问题台账。
+
+---
+
+## 3. 交付物与文档红线
+
+1. 不靠口头聊天当依据，需求与门禁以 `specs/`、`DISPATCH_BOARD.md` 与任务卡的 **SHA-256 指纹** 为准。
+2. 严禁在提交、日志或协作文档中写入真实 API Key、Token、鉴权环境变量明文或私有媒体路径。
+3. 中继运行数据位于 `.agents/relay/`（如未加入 `.gitignore`，切勿混入业务提交）。

@@ -1,0 +1,11 @@
+{
+  "name": "sdd-multi-agent-relay",
+  "displayName": "SDD Multi-Agent Relay",
+  "version": "1.0.0",
+  "description": "Spec-Driven Multi-Agent Gated Orchestration Workflow (0 + 2+3 roles) with cross-platform VS Code Codex anti-stall relay, R0 isolated audits, and standardized Spec/Plan/Task templates.",
+  "suggestedPrompts": [
+    "按 sdd-multi-agent-relay 流程初始化当前项目并整理新需求的规范方案（Spec）",
+    "让 R0 对当前方案做实施前设计预审并收敛待拍板决策（PD）清单",
+    "按 sdd-multi-agent-relay 断点恢复当前项目的巡检监管与跨端审核"
+  ]
+}
