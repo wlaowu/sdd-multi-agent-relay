@@ -11,6 +11,12 @@
   "codexBin": "",
   "gitBranch": "{{GIT_BRANCH}}",
   "automationMode": "full-auto",
+  "waves": [],
+  "contextBudgets": {
+    "stateMaxLines": 120,
+    "boardMaxLines": 160,
+    "taskCardMaxLines": 250
+  },
   "worktrees": {
     "autoDiscover": true,
     "roleWorktrees": {}

@@ -26,9 +26,9 @@
 | **第 0 层** | **`Relay Supervisor`（总控中继监工）** | Antigravity 主会话（常驻巡检） | 3 分钟防停巡检、推动停顿 Codex、跨端转交 `R0`/`Hub` 报文、监控子会话健康与熔断阈值、Webhook 告警、收口验收与按授权关机 | **严禁改业务代码**、严禁代填回执、严禁改动 `DISPATCH_BOARD.md` / `STATE.md` / `tasks/*.md`、严禁偷窥 Codex 会话正文 | `.agents/relay/*`（`relay-state.json`、`relay.log`、出站消息队列）及终局授权后的 `FINAL_SUMMARY.md` 索引校验 |
 | **中枢 1** | **`Hub`（需求与方案中枢）** | Antigravity 独立会话（按需拉起或与用户直连） | 需求讨论、输出自包含版本化规格书（`Spec`）、熔断根因复盘、处理中途方案变更（`CR`） | 严禁修改业务源码或直接运行改变工作区的构建测试；**进入实施期后不再直接改写 `DISPATCH_BOARD.md`** | `specs/*_SPEC_V*.md`、`DISCUSSIONS.md` |
 | **中枢 2** | **`Codex-Hub`（分发与技术中枢）** | VS Code Codex（动态绑定／可换班） | 只读源码研判、把已批准方案拆解为串行阶段、定义阶段范围/禁越界条款/验收门槛、管写锁、核收 `AB`/`C` 回执、内部调度 `AB` 与 `C`、登记跨端审核单 | **严禁直接改业务代码**、严禁运行修改源码/Git 状态的构建命令、严禁改动 `audits/*` 原件或代作 R0 裁定 | `STATE.md`、`DISPATCH_BOARD.md`、`tasks/*.md`（仅派发说明区） |
-| **专席 1** | **`AB`（全栈实施与集成专席）** | VS Code Codex（动态绑定／可换班） | 按当前阶段任务卡实施业务代码、跑离线/单测/合成测试、冻结完整 40 位 Git Commit SHA、生成 `.agents/evidence/<stage>/SHA256SUMS` 与 `REPRO.md` | 严禁越出本阶段清单、未经门禁放行严禁擅自开启下一阶段、严禁修改 `audits/*` / `ISSUE_LEDGER.md` | 业务代码与仓内工程文档（仅持锁期间）、`tasks/AB-codex.md`（仅回执区）、`AUDIT_QUEUE.md` |
+| **专席 1** | **`AB`（全栈实施与集成专席）** | VS Code Codex（动态绑定／可换班） | 按当前阶段任务卡实施业务代码、强制 **Red → Green TDD（先编写必失败边界/反例测试，再实现转绿）**、冻结完整 40 位 Git Commit SHA、生成 `.agents/evidence/<stage>/SHA256SUMS` 与 `REPRO.md` | 严禁越出本阶段清单、未经门禁放行严禁擅自开启下一阶段、严禁修改 `audits/*` / `ISSUE_LEDGER.md` | 业务代码与仓内工程文档（仅持锁期间）、`tasks/AB-codex.md`（仅回执区）、`AUDIT_QUEUE.md` |
 | **专席 2** | **`C`（原生 / 真机环境验证专席）** | 本机终端或独立验证工作树（按需唤醒） | 仅在**里程碑真机门禁**激活：真实 OS 编译（如 Windows MSVC/WebView2）、真实浏览器/GUI、真实外设或受控外部集成验收 | 严禁就地修业务源码（发现缺陷冻结复现日志退回 `AB` 修复） | `tasks/C-desktop.md`（仅实测回执区）、`STATE.md` 桌面/真机独占锁 |
-| **专席 3** | **`R0`（独立只读审计专席）** | Antigravity 独立子会话（由中继按需拉起/复用） | ① 实施前方案设计预审（排雷与提炼用户决策）；② 每阶段基于冻结 40 位 SHA 的只读代码审查 + 隔离副本复测，给出唯一正式裁定 | **主仓库严格只读**（复测必须 `git archive <sha>` 至临时目录）；严禁覆盖历史审计原件；严禁读取 API Key/私有媒体或发起未授权付费请求 | `audits/design-reviews/*.md`、`audits/<BATCH-ID>/*.md`、`ISSUE_LEDGER.md` |
+| **专席 3** | **`R0`（独立只读审计专席）** | Antigravity 独立子会话（由中继按需拉起/复用） | ① 实施前方案设计预审（排雷与提炼用户决策）；② 每阶段基于冻结 40 位 SHA 执行 **两段式独立审计**（第一段逐条核对 Spec/`V-xx` 零遗漏 → 第二段开展代码质量与隔离对抗边界复测），发布唯一正式裁定 | **主仓库严格只读**（复测必须 `git archive <sha>` 至临时目录）；严禁覆盖历史审计原件；严禁读取 API Key/私有媒体或发起未授权付费请求 | `audits/design-reviews/*.md`、`audits/<BATCH-ID>/*.md`、`ISSUE_LEDGER.md` |
 
 ---
 
@@ -115,9 +115,9 @@ flowchart TD
 - 严禁在未改 `Spec` 时直接口头给 `AB` 加减功能（否则 `R0` 依据旧 `Spec` 必打回）。
 - 中途发现方案不可行或用户新增需求，必须按以下顺序流转：
   1. 中继暂停当前阶段自动派单；
-  2. 由 `Hub` 评估影响并新增递增版本方案（如 `V0.3 → V0.4`）记录差异与迁移影响；
+  2. 由 `Hub` 评估影响，套用 `resources/CR_DELTA.md.template` 起草轻量增量变更提案（`CR-xx`，列明 `ADDED` / `MODIFIED` / `REMOVED` Diff 与受影响 `V-xx`/反例），批准后新增递增版本方案（如 `V0.3 → V0.4`）；
   3. `Codex-Hub` 更新看板待办、重置受影响阶段，将新版 `Spec` 路径与新 SHA-256 指纹纳入下一张任务卡的 Context Pack；
-  4. 用户确认变更单后重新放行自动循环。
+  4. 用户确认变更单后通过 `relay.mjs analyze --json` 复检，重新放行自动循环。
 
 ### 4. 挂机容灾、子会话监控与主动告警
 - **状态全外置**：中继进度全部持久化在 `.agents/relay/relay-state.json`（包含当前绑定角色最后写入时间、最近快照指纹、连续无进展推送次数、各阶段返修计数、已处理跨端单号与活跃审查子会话 ID）。任何时候进程重启或模型切换，均只需读取 `relay-state.json` 即可秒级恢复。
@@ -161,3 +161,13 @@ flowchart TD
 | **规则 c（`HUB` 派新单 `AB` 未接）** | `HUB` 已发新派单、`HUB` 与 `AB` 均停且 `AB` 未接棒 | 推 `AB` 接棒执行新单 |
 | **规则 d（双停且指向不明）** | `AB` 与 `HUB` 均停且看板状态模糊/疑有隐性阻塞 | 推 `HUB` 核对看板继续派发或明确写明阻塞原因与责任方 |
 | **规则 e（单方工作中静默）** | 任一方处于运行中（`idle_seconds < 180`） | 保持安静不打扰，仅在规则 a（`AB` 自身停于未完成任务且正在等待之外）例外 |
+
+---
+
+## §8 `v1.3.0` 黄金三角增强机制（防返修、防腐化、事件驱动）
+
+1. **防漂移开工前体检（`relay.mjs analyze`）**：派单开工前执行只读体检，拦截缺失 `V-xx`、未拍板 `PD-xx`、看板重号、缺失 `[T-xx]`、断链文件、超上下文预算与未解除熔断（发现阻断错误即返回非 `0` 退出码）。
+2. **波次并行与多 Worktree 调度（Wave）**：看板任务总表通过 `波次/依赖` 列（`W0`、`W1`、`W2（依赖 T-01）`）声明可并行波次，`status` 自动汇总 `waves.currentWave` 与 `waves.parallelReady`，配合多 `git worktree` 让无依赖子任务并发推进。
+3. **上下文预算监控与日志归档（`relay.mjs compact`）**：按 `contextBudgets`（默认 `stateMaxLines: 120`、`boardMaxLines: 160`、`taskCardMaxLines: 250`）持续监控协作文档膨胀，支持 `--dry-run` 预警与 `--apply` 将超长历史调度日志安全归档至 `.agents/development/archive/` 并留 1 行索引。
+4. **零依赖事件信号总线与阶段耗时追踪（`relay.mjs event` & `stageTimers`）**：角色完工、阻塞或送审时可选向 `.agents/relay/events.jsonl` 发射结构化信号（`done`/`blocked`/`review_ready`/`heartbeat`/`decision_needed`），巡检人话卡片最高优先展示 `◆ **收到事件信号**` 并累计各阶段耗时。
+5. **零依赖离线 HTML 驾驶舱（`relay.mjs ui`）**：支持 `--export <file.html>` 导出零外链单文件中文全景驾驶舱，或本地 `--port 4317` 启动每 5 秒轮询 `/api/status` 的实时网页。

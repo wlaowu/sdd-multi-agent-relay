@@ -20,6 +20,10 @@
   7. 终局 `FINAL_SUMMARY.md`（含效能复盘统计）与可选安全关机协议。
 - **零固定目录、零固定会话**：在任意项目任意子目录自动向上发现 `.agents/relay.json`；Codex 会话支持 **标题动态匹配（`threadMatchers`）**、**随时关键词改绑（`bind --match`）** 与 **一键自动新建会话（`spawn`）**。
 - **人话驾驶舱输出与多 Worktree 监控（`v1.2.0`）**：`relay.mjs status --compact` 与 `render` 子命令原生输出自然中文 2 行状态卡（说清谁在干什么、改动几个文件、需不需要人管，无机械暗语）、4 列里程碑表、熔断与收官卡片；支持 `worktrees.autoDiscover` / `roleWorktrees` 与自定义角色（如 `a`/`b`）及显式 `automationMode`（`full-auto` / `semi-auto`）。
+- **黄金三角升级（`v1.3.0`）**：
+  - **压低首审返修率**：`AB` 强制 **Red → Green TDD**（先编写必失败边界/反例测试再写代码），`R0` 执行 **两段式独立审计**（Spec/`V-xx` 逐条对齐 → 代码质量与对抗边界复测）；
+  - **Wave 波次并行与上下文瘦身**：支持看板 `波次/依赖`（`W0`/`W1`）多 Worktree 并行调度与 `contextBudgets` 行数监控，`relay.mjs compact --apply` 自动归档超长历史调度日志；
+  - **事件驱动、开工前体检与离线驾驶舱**：内置零依赖 `.agents/relay/events.jsonl` 事件总线（`event emit|list|ack|clear`）、阶段耗时追踪（`stageTimers`）、开工前防漂移体检（`analyze`）、增量变更模板（`CR_DELTA.md.template`）及零外链离线中文 HTML 驾驶舱（`ui --export` / `--port 4317`）。
 
 ---
 
@@ -156,7 +160,7 @@ sdd-multi-agent-relay/
     │   ├── ROLE_PROMPTS.md             # 跨会话报文与 R0/Hub/换班提示词模板
     │   └── PROJECT_CONFIG_SCHEMA.md    # relay.json Schema 与 relay.mjs CLI 手册
     ├── examples/sample-pkg/            # 完整脱敏四联范本 (Spec / Board / Task / R0 报告)
-    ├── resources/                      # relay.json / SPEC / STATE / BOARD / TASK_CARD / AGENTS / FINAL_SUMMARY 模板
+    ├── resources/                      # relay.json / SPEC / CR_DELTA / STATE / BOARD / TASK_CARD / AGENTS / FINAL_SUMMARY 模板
     └── scripts/
         └── relay.mjs                   # 跨平台零依赖中继监控 CLI
 ```

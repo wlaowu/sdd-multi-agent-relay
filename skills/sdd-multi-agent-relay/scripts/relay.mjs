@@ -8,8 +8,9 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -132,8 +133,28 @@ Commands:
             Options: [--config <path> | --project <dir>]
                      --event <circuit_breaker|blocker|quota|complete|info>
                      --title <text> --message <text> [--dry-run]
+
+  analyze   Read-only pre-flight drift & consistency check (Spec V-xx/PD-xx, board IDs/tags/links, budgets, events, breakers)
+            Options: [--config <path> | --project <dir>] [--json]
+
+  event     Zero-dependency event signal bus (.agents/relay/events.jsonl)
+            Actions:
+              emit   --role <role> --type <done|blocked|review_ready|heartbeat|decision_needed> [--task <id>] [--sha <sha>] [--message <text>]
+              list   [--all] [--limit <n>] [--json]
+              ack    (--all | --id <eventId> | --task <id> | --role <role>)
+              clear  [--all]
+
+  compact   Monitor context budgets and archive old DISPATCH_BOARD.md scheduling logs safely
+            Options: [--config <path> | --project <dir>] [--dry-run] [--apply] [--keep-logs <n>] [--json]
+
+  ui        Generate or serve zero-dependency offline Chinese HTML cockpit
+            Options: [--config <path> | --project <dir>] [--export <file.html>] [--host <addr>] [--port <4317>]
 `);
 }
+
+const BOOLEAN_FLAGS = new Set([
+  'help', 'json', 'compact', 'force', 'dry-run', 'apply', 'auto', 'all', 'no-gitignore',
+]);
 
 function parseArgs(argv) {
   const positionals = [];
@@ -144,6 +165,10 @@ function parseArgs(argv) {
       flags.help = true;
     } else if (arg.startsWith('--')) {
       const key = arg.slice(2);
+      if (BOOLEAN_FLAGS.has(key)) {
+        flags[key] = true;
+        continue;
+      }
       const next = argv[i + 1];
       if (next !== undefined && !next.startsWith('--')) {
         flags[key] = next;
@@ -569,7 +594,8 @@ function loadConfigAndPaths(flags) {
   const relayDir = path.resolve(winProjectRoot, config.relayDir || '.agents/relay');
   const statePath = path.join(relayDir, 'relay-state.json');
   const logPath = path.join(relayDir, 'relay.log');
-  return { config, configPath, winProjectRoot, devDir, relayDir, statePath, logPath };
+  const eventsPath = path.join(relayDir, 'events.jsonl');
+  return { config, configPath, winProjectRoot, devDir, relayDir, statePath, logPath, eventsPath };
 }
 
 function createInitialState() {
@@ -589,6 +615,7 @@ function createInitialState() {
     },
     stageFixes: {},
     passedStages: {},
+    stageTimers: {},
     processedHandoffs: [],
     activeCrossAgent: null,
     rotations: [],
@@ -605,6 +632,7 @@ function loadOrCreateState(statePath) {
       roles: { ...base.roles, ...(parsed.roles || {}) },
       stageFixes: parsed.stageFixes || {},
       passedStages: parsed.passedStages || {},
+      stageTimers: parsed.stageTimers || {},
       processedHandoffs: Array.isArray(parsed.processedHandoffs) ? parsed.processedHandoffs : [],
       rotations: Array.isArray(parsed.rotations) ? parsed.rotations : [],
     };
@@ -894,12 +922,144 @@ function resolveRoleThreads(config, state, idleThreshold, maxNoProgress) {
   return roles;
 }
 
-function classifyBoardRowStatus(cells, rawId, stageKey, state, activeCrossAgent) {
+const DEFAULT_CONTEXT_BUDGETS = {
+  stateMaxLines: 120,
+  boardMaxLines: 160,
+  taskCardMaxLines: 250,
+};
+
+const VALID_EVENT_TYPES = new Set([
+  'done', 'blocked', 'review_ready', 'heartbeat', 'decision_needed',
+]);
+
+function splitTableCells(row) {
+  const rawCells = String(row || '').split('|').map((c) => c.trim());
+  if (rawCells[0] === '') rawCells.shift();
+  if (rawCells.length > 0 && rawCells[rawCells.length - 1] === '') rawCells.pop();
+  return rawCells;
+}
+
+function isMarkdownSepRow(cells) {
+  return cells.length > 0 && cells.every((c) => /^:?-{3,}:?$/.test(c));
+}
+
+function parseBoardDocument(boardPath) {
+  if (!boardPath || !fs.existsSync(boardPath)) {
+    return {
+      exists: false,
+      lines: [],
+      taskHeaderCells: [],
+      waveColIdx: -1,
+      titleColIdx: 1,
+      taskRows: [],
+      logHeaderLine: '| 时间 | 任务编号 | 动作摘要 | 来源 → 去向 | 关联 SHA / 版本 | 备注与核收凭据 |',
+      logSepLine: '| --- | --- | --- | --- | --- | --- |',
+      logRows: [],
+      logStartIdx: -1,
+      logEndIdx: -1,
+    };
+  }
+  const lines = fs.readFileSync(boardPath, 'utf8').split(/\r?\n/);
+  const sec1Idx = lines.findIndex((l) => /^##\s*1\.|阶段任务总表/.test(l));
+  const sec2Idx = lines.findIndex((l) => /^##\s*2\.|时序.*日志|调度日志/.test(l));
+
+  const taskRangeStart = sec1Idx >= 0 ? sec1Idx + 1 : 0;
+  const taskRangeEnd = sec2Idx >= 0 ? sec2Idx : lines.length;
+  let taskHeaderCells = [];
+  let seenTaskSep = false;
+  const taskRows = [];
+
+  for (let i = taskRangeStart; i < taskRangeEnd; i++) {
+    const ln = lines[i].trim();
+    if (!ln.startsWith('|')) continue;
+    const cells = splitTableCells(ln);
+    if (cells.length < 2) continue;
+    if (isMarkdownSepRow(cells)) {
+      seenTaskSep = true;
+      continue;
+    }
+    if (!seenTaskSep && taskHeaderCells.length === 0) {
+      taskHeaderCells = cells;
+      continue;
+    }
+    if (/^`?20\d{2}-/.test(cells[0])) continue;
+    taskRows.push({ lineNum: i + 1, raw: lines[i], cells });
+  }
+
+  let waveColIdx = -1;
+  let titleColIdx = 1;
+  if (taskHeaderCells.length > 0) {
+    const foundWave = taskHeaderCells.findIndex((h) => /波次|Wave/i.test(h));
+    if (foundWave >= 0) {
+      waveColIdx = foundWave;
+      titleColIdx = foundWave === 1 && taskHeaderCells.length > 2 ? 2 : 1;
+    }
+  }
+
+  let logHeaderLine = '| 时间 | 任务编号 | 动作摘要 | 来源 → 去向 | 关联 SHA / 版本 | 备注与核收凭据 |';
+  let logSepLine = '| --- | --- | --- | --- | --- | --- |';
+  const logRows = [];
+  let logStartIdx = -1;
+  let logEndIdx = -1;
+
+  if (sec2Idx >= 0) {
+    let seenLogHeader = false;
+    let seenLogSep = false;
+    for (let i = sec2Idx + 1; i < lines.length; i++) {
+      const ln = lines[i].trim();
+      if (!ln.startsWith('|')) {
+        if (seenLogSep && ln !== '') break;
+        continue;
+      }
+      const cells = splitTableCells(ln);
+      if (!seenLogHeader) {
+        logHeaderLine = lines[i];
+        seenLogHeader = true;
+        continue;
+      }
+      if (!seenLogSep && isMarkdownSepRow(cells)) {
+        logSepLine = lines[i];
+        seenLogSep = true;
+        continue;
+      }
+      if (logStartIdx === -1) logStartIdx = i;
+      logEndIdx = i;
+      logRows.push({ lineNum: i + 1, raw: lines[i], cells });
+    }
+  } else {
+    for (let i = 0; i < lines.length; i++) {
+      const ln = lines[i];
+      if (/^\|\s*`?20\d{2}-/.test(ln)) {
+        if (logStartIdx === -1) logStartIdx = i;
+        logEndIdx = i;
+        logRows.push({ lineNum: i + 1, raw: ln, cells: splitTableCells(ln) });
+      }
+    }
+  }
+
+  return {
+    exists: true,
+    lines,
+    taskHeaderCells,
+    waveColIdx,
+    titleColIdx,
+    taskRows,
+    logHeaderLine,
+    logSepLine,
+    logRows,
+    logStartIdx,
+    logEndIdx,
+  };
+}
+
+function classifyBoardRowStatus(cells, rawId, stageKey, state, activeCrossAgent, waveColIdx = -1) {
   if (state?.passedStages?.[stageKey]) return 'done';
   const activeStage = activeCrossAgent?.taskId ? normalizeStageKey(activeCrossAgent.taskId) : null;
   if (activeStage && activeStage === stageKey) return 'active';
 
-  const statusText = cells.slice(1).join(' | ');
+  const statusText = cells
+    .filter((_, idx) => idx !== 0 && idx !== waveColIdx)
+    .join(' | ');
   if (/(?:通过|已闭环|已完成|\bPASS\b|\bDONE\b|\bCLOSED\b)/i.test(statusText) &&
       !/(?:要求整改|不满足|未送审|待.*(?:通过|确认))/.test(statusText)) {
     return 'done';
@@ -913,14 +1073,12 @@ function classifyBoardRowStatus(cells, rawId, stageKey, state, activeCrossAgent)
   return 'pending';
 }
 
-function parsePipelineSummary(boardTaskRows, state, activeCrossAgent) {
+function parsePipelineSummary(boardTaskRows, state, activeCrossAgent, waveColIdx = -1) {
   const stageMap = new Map();
   let seq = 0;
 
-  for (const row of boardTaskRows || []) {
-    const rawCells = row.split('|').map((c) => c.trim());
-    if (rawCells[0] === '') rawCells.shift();
-    if (rawCells.length > 0 && rawCells[rawCells.length - 1] === '') rawCells.pop();
+  for (const entry of boardTaskRows || []) {
+    const rawCells = typeof entry === 'string' ? splitTableCells(entry) : entry.cells;
     if (rawCells.length < 2) continue;
 
     const rawId = rawCells[0].replace(/`/g, '').trim();
@@ -931,7 +1089,7 @@ function parsePipelineSummary(boardTaskRows, state, activeCrossAgent) {
     const fixMatch = rawId.match(/[-_]FIX(\d+)/i);
     const round = fixMatch ? parseInt(fixMatch[1], 10) : 0;
     const rank = round * 2 + (isReview ? 1 : 0);
-    const status = classifyBoardRowStatus(rawCells, rawId, stageKey, state, activeCrossAgent);
+    const status = classifyBoardRowStatus(rawCells, rawId, stageKey, state, activeCrossAgent, waveColIdx);
 
     const existing = stageMap.get(stageKey);
     if (!existing) {
@@ -971,6 +1129,312 @@ function parsePipelineSummary(boardTaskRows, state, activeCrossAgent) {
   };
 }
 
+function parseWaveSummary(boardTaskRows, config, state, activeCrossAgent, waveColIdx = -1) {
+  const stageStatusMap = new Map();
+  const stageWaveMeta = new Map();
+  const stageOrder = [];
+
+  const configWaveMetaById = new Map();
+  const configTaskToWave = new Map();
+  for (const w of Array.isArray(config?.waves) ? config.waves : []) {
+    if (!w || typeof w !== 'object') continue;
+    const wid = String(w.id || w.wave || '').trim().toUpperCase();
+    if (!wid) continue;
+    const deps = Array.isArray(w.dependsOn) ? w.dependsOn.map((d) => String(d).trim().toUpperCase()).filter(Boolean) : [];
+    configWaveMetaById.set(wid, { name: String(w.name || '').trim(), dependsOn: deps });
+    for (const t of Array.isArray(w.tasks) ? w.tasks : []) {
+      const tid = normalizeStageKey(String(t || '').trim());
+      if (tid) configTaskToWave.set(tid, { wave: wid, dependsOn: deps });
+    }
+  }
+
+  for (const entry of boardTaskRows || []) {
+    const rawCells = typeof entry === 'string' ? splitTableCells(entry) : entry.cells;
+    if (rawCells.length < 2) continue;
+    const rawId = rawCells[0].replace(/`/g, '').trim();
+    if (!rawId || /^<.*>$/.test(rawId) || /^---+$/.test(rawId)) continue;
+
+    const stageKey = normalizeStageKey(rawId);
+    const isReview = /(?:[-_]REVIEW|[-_]R0)$/i.test(rawId);
+    const fixMatch = rawId.match(/[-_]FIX(\d+)/i);
+    const round = fixMatch ? parseInt(fixMatch[1], 10) : 0;
+    const rank = round * 2 + (isReview ? 1 : 0);
+    const status = classifyBoardRowStatus(rawCells, rawId, stageKey, state, activeCrossAgent, waveColIdx);
+
+    const prev = stageStatusMap.get(stageKey);
+    if (!prev) {
+      stageStatusMap.set(stageKey, { stage: stageKey, status, rank });
+      stageOrder.push(stageKey);
+    } else if (status === 'done' || rank >= prev.rank) {
+      if (prev.status !== 'done' || status === 'done' || !isReview) {
+        prev.status = status;
+        prev.rank = Math.max(prev.rank, rank);
+      }
+    }
+
+    const waveIdx = waveColIdx >= 0 ? waveColIdx : (rawCells.length >= 8 && /W\d+/i.test(rawCells[1]) ? 1 : -1);
+    const waveCell = waveIdx >= 0 ? String(rawCells[waveIdx] || '').replace(/`/g, ' ').trim() : '';
+    const wMatch = waveCell.match(/\b(W\d+)\b/i);
+    if (wMatch) {
+      const waveId = wMatch[1].toUpperCase();
+      const depTasks = Array.from(new Set(
+        (waveCell.match(/\bT-\d+(?:\.\d+)?\b/gi) || []).map((x) => normalizeStageKey(x)).filter((x) => x !== stageKey),
+      ));
+      const depWaves = Array.from(new Set(
+        (waveCell.match(/\bW\d+\b/gi) || []).map((x) => x.toUpperCase()).filter((x) => x !== waveId),
+      ));
+      const existingMeta = stageWaveMeta.get(stageKey) || { wave: waveId, taskDeps: [], waveDeps: [] };
+      existingMeta.wave = waveId;
+      existingMeta.taskDeps = Array.from(new Set([...existingMeta.taskDeps, ...depTasks]));
+      existingMeta.waveDeps = Array.from(new Set([...existingMeta.waveDeps, ...depWaves]));
+      stageWaveMeta.set(stageKey, existingMeta);
+    } else if (!stageWaveMeta.has(stageKey) && configTaskToWave.has(stageKey)) {
+      const cfgMeta = configTaskToWave.get(stageKey);
+      stageWaveMeta.set(stageKey, { wave: cfgMeta.wave, taskDeps: [], waveDeps: [...cfgMeta.dependsOn] });
+    }
+  }
+
+  for (const [taskKey, cfgMeta] of configTaskToWave.entries()) {
+    if (!stageStatusMap.has(taskKey)) {
+      stageStatusMap.set(taskKey, { stage: taskKey, status: state?.passedStages?.[taskKey] ? 'done' : 'pending', rank: 0 });
+      stageOrder.push(taskKey);
+      stageWaveMeta.set(taskKey, { wave: cfgMeta.wave, taskDeps: [], waveDeps: [...cfgMeta.dependsOn] });
+    }
+  }
+
+  const waveGroups = new Map();
+  for (const stageKey of stageOrder) {
+    const meta = stageWaveMeta.get(stageKey);
+    if (!meta) continue;
+    const wid = meta.wave;
+    if (!waveGroups.has(wid)) {
+      const cfgMeta = configWaveMetaById.get(wid);
+      waveGroups.set(wid, {
+        wave: wid,
+        name: cfgMeta?.name || '',
+        dependsOn: new Set(cfgMeta?.dependsOn || []),
+        tasks: [],
+      });
+    }
+    const grp = waveGroups.get(wid);
+    for (const wd of meta.waveDeps) grp.dependsOn.add(wd);
+    const stInfo = stageStatusMap.get(stageKey);
+    grp.tasks.push({
+      task: stageKey,
+      status: stInfo?.status || 'pending',
+      dependsOn: Array.from(new Set([...meta.taskDeps, ...meta.waveDeps])),
+    });
+  }
+
+  const waveNum = (wid) => {
+    const m = String(wid).match(/\d+/);
+    return m ? parseInt(m[0], 10) : Number.MAX_SAFE_INTEGER;
+  };
+  const items = Array.from(waveGroups.values())
+    .sort((a, b) => waveNum(a.wave) - waveNum(b.wave) || a.wave.localeCompare(b.wave))
+    .map((g) => {
+      const total = g.tasks.length;
+      const done = g.tasks.filter((t) => t.status === 'done').length;
+      const active = g.tasks.filter((t) => t.status === 'active').length;
+      const blocked = g.tasks.filter((t) => t.status === 'blocked').length;
+      const pending = g.tasks.filter((t) => t.status === 'pending').length;
+      let status = 'pending';
+      if (total > 0 && done === total) status = 'done';
+      else if (blocked > 0) status = 'blocked';
+      else if (active > 0 || done > 0) status = 'active';
+      return {
+        wave: g.wave,
+        name: g.name,
+        dependsOn: Array.from(g.dependsOn),
+        tasks: g.tasks,
+        total,
+        done,
+        active,
+        blocked,
+        pending,
+        status,
+      };
+    });
+
+  const waveStatusMap = new Map(items.map((w) => [w.wave, w.status]));
+  const currentItem =
+    items.find((w) => w.status === 'active' || w.status === 'blocked') ||
+    items.find((w) => w.status === 'pending') ||
+    (items.length > 0 ? items[items.length - 1] : null);
+  const currentWave = currentItem ? currentItem.wave : null;
+
+  const parallelReady = [];
+  if (currentItem) {
+    for (const t of currentItem.tasks) {
+      if (t.status !== 'pending') continue;
+      const depsOk = t.dependsOn.every((dep) => {
+        if (/^W\d+$/i.test(dep)) return waveStatusMap.get(dep.toUpperCase()) === 'done';
+        return stageStatusMap.get(normalizeStageKey(dep))?.status === 'done';
+      });
+      if (depsOk) parallelReady.push(t.task);
+    }
+  }
+
+  const summary = items.map((w) => {
+    const label = w.status === 'done' ? '已完成' : (w.status === 'blocked' ? '阻塞' : (w.status === 'active' ? '进行中' : '待开始'));
+    return `${w.wave} ${label}(${w.done}/${w.total})`;
+  }).join(' · ');
+
+  return {
+    hasWaves: items.length > 0,
+    currentWave,
+    parallelReady,
+    canParallelize: parallelReady.length >= 2,
+    summary,
+    items,
+  };
+}
+
+function getContextBudgets(config) {
+  const raw = config?.contextBudgets || {};
+  const posInt = (v, dft) => (Number.isInteger(v) && v > 0 ? v : dft);
+  return {
+    stateMaxLines: posInt(raw.stateMaxLines, DEFAULT_CONTEXT_BUDGETS.stateMaxLines),
+    boardMaxLines: posInt(raw.boardMaxLines, DEFAULT_CONTEXT_BUDGETS.boardMaxLines),
+    taskCardMaxLines: posInt(raw.taskCardMaxLines, DEFAULT_CONTEXT_BUDGETS.taskCardMaxLines),
+  };
+}
+
+function countFileLines(filePath) {
+  if (!fs.existsSync(filePath)) return 0;
+  const text = fs.readFileSync(filePath, 'utf8');
+  if (!text) return 0;
+  return text.split(/\r?\n/).length;
+}
+
+function inspectContextBudgets(ctx) {
+  const budgets = getContextBudgets(ctx.config);
+  const files = [];
+  const checkFile = (relPath, fullPath, maxLines, kind) => {
+    if (!fs.existsSync(fullPath)) return;
+    const lines = countFileLines(fullPath);
+    const exceeded = lines > maxLines;
+    files.push({
+      file: relPath,
+      kind,
+      lines,
+      maxLines,
+      exceeded,
+      excessLines: exceeded ? lines - maxLines : 0,
+    });
+  };
+
+  checkFile('STATE.md', path.join(ctx.devDir, 'STATE.md'), budgets.stateMaxLines, 'state');
+  checkFile('DISPATCH_BOARD.md', path.join(ctx.devDir, 'DISPATCH_BOARD.md'), budgets.boardMaxLines, 'board');
+  const tasksDir = path.join(ctx.devDir, 'tasks');
+  if (fs.existsSync(tasksDir)) {
+    for (const f of fs.readdirSync(tasksDir).sort()) {
+      if (f.endsWith('.md')) {
+        checkFile(`tasks/${f}`, path.join(tasksDir, f), budgets.taskCardMaxLines, 'taskCard');
+      }
+    }
+  }
+  const overBudgetFiles = files.filter((f) => f.exceeded);
+  return {
+    budgets,
+    files,
+    overBudgetCount: overBudgetFiles.length,
+    overBudgetFiles,
+  };
+}
+
+function formatEventTypeCn(type) {
+  switch (String(type || '').toLowerCase()) {
+    case 'done': return '任务完工';
+    case 'blocked': return '遇到阻塞';
+    case 'review_ready': return '送审就绪';
+    case 'heartbeat': return '进度心跳';
+    case 'decision_needed': return '等待拍板';
+    default: return String(type || '事件信号');
+  }
+}
+
+function readEvents(eventsPath) {
+  if (!eventsPath || !fs.existsSync(eventsPath)) return [];
+  const raw = fs.readFileSync(eventsPath, 'utf8');
+  const events = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const obj = JSON.parse(trimmed);
+      if (obj && typeof obj === 'object') events.push(obj);
+    } catch {
+      // ignore malformed JSONL lines
+    }
+  }
+  return events;
+}
+
+function writeEventsAtomic(eventsPath, events) {
+  fs.mkdirSync(path.dirname(eventsPath), { recursive: true });
+  const tmp = `${eventsPath}.tmp`;
+  const payload = events.map((ev) => JSON.stringify(ev)).join('\n') + (events.length > 0 ? '\n' : '');
+  fs.writeFileSync(tmp, payload, 'utf8');
+  fs.renameSync(tmp, eventsPath);
+}
+
+function touchStageTimer(state, taskId, phase, extra = {}) {
+  if (!taskId) return null;
+  const stageKey = normalizeStageKey(taskId);
+  const nowIso = formatIsoOffset();
+  const nowMs = Date.now();
+  state.stageTimers = state.stageTimers || {};
+  const existing = state.stageTimers[stageKey] || {
+    stage: stageKey,
+    startedAt: nowIso,
+    startedAtMs: nowMs,
+    reviewStartedAt: null,
+    reviewStartedAtMs: null,
+    finishedAt: null,
+    finishedAtMs: null,
+    lastReviewDurationSec: null,
+    totalReviewDurationSec: 0,
+    elapsedSec: 0,
+    status: 'active',
+    lastEventAt: null,
+    lastEventType: null,
+  };
+  if (!existing.startedAtMs) {
+    existing.startedAt = existing.startedAt || nowIso;
+    existing.startedAtMs = nowMs;
+  }
+
+  if (phase === 'start-review') {
+    existing.reviewStartedAt = nowIso;
+    existing.reviewStartedAtMs = nowMs;
+    existing.status = 'reviewing';
+  } else if (phase === 'finish-review') {
+    const revStartMs = existing.reviewStartedAtMs || extra.fallbackReviewStartMs || existing.startedAtMs;
+    const reviewDurationSec = revStartMs ? Math.max(0, Math.round((nowMs - revStartMs) / 1000)) : 0;
+    existing.lastReviewDurationSec = reviewDurationSec;
+    existing.totalReviewDurationSec = (existing.totalReviewDurationSec || 0) + reviewDurationSec;
+    existing.finishedAt = nowIso;
+    existing.finishedAtMs = nowMs;
+    existing.elapsedSec = Math.max(0, Math.round((nowMs - existing.startedAtMs) / 1000));
+    existing.status = extra.verdict === '通过' ? 'passed' : (extra.verdict === '阻塞' ? 'blocked' : 'rework');
+  } else if (phase === 'event') {
+    existing.lastEventAt = nowIso;
+    existing.lastEventType = extra.eventType || null;
+    existing.elapsedSec = Math.max(0, Math.round((nowMs - existing.startedAtMs) / 1000));
+    if (extra.eventType === 'blocked' || extra.eventType === 'decision_needed') {
+      existing.status = 'blocked';
+    } else if (extra.eventType === 'review_ready') {
+      existing.status = 'review_ready';
+    } else if (!existing.finishedAtMs) {
+      existing.status = 'active';
+    }
+  }
+
+  state.stageTimers[stageKey] = existing;
+  return existing;
+}
+
 function formatDurationCn(seconds) {
   if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) return '-';
   const s = Math.max(0, Math.round(Number(seconds)));
@@ -990,6 +1454,7 @@ function formatRoleLabelCn(role) {
   if (key === 'hub') return '总控中枢';
   if (key === 'ab') return '实施专席 (AB)';
   if (key === 'c') return '真机验证 (C)';
+  if (key === 'r0') return '独立审计 (R0)';
   return `${key.toUpperCase()} 线`;
 }
 
@@ -1007,6 +1472,8 @@ function buildTelemetryLine(st) {
     name !== 'hub' && (info.status === 'WORKING' || info.status === 'STOPPED'));
   const allLive = roleEntries.filter(([, info]) => info.status === 'WORKING' || info.status === 'STOPPED');
   const hasBreaker = Boolean(st.breakers?.fixCapBreaker || (st.breakers?.noProgressRoles?.length || 0) > 0);
+  const pendingEvents = Array.isArray(st.pendingEvents) ? st.pendingEvents : [];
+  const hasPendingEvents = pendingEvents.length > 0;
   const hasAudit = Boolean(st.activeCrossAgent);
   const hasHandoff = (st.pendingCrossAgent?.length || 0) > 0;
   const hasWorktrees = Array.isArray(st.worktrees) && st.worktrees.length > 0;
@@ -1014,6 +1481,7 @@ function buildTelemetryLine(st) {
 
   let title = '◌ **待命观察中**';
   if (hasBreaker) title = '■ **自动推进已暂停**';
+  else if (hasPendingEvents) title = '◆ **收到事件信号**';
   else if (hasAudit) title = '◐ **独立审计进行中**';
   else if (hasHandoff) title = '◆ **发现待转交任务**';
   else if (hasWorking && hasWorktrees) title = '● **多线并行开发中**';
@@ -1026,20 +1494,34 @@ function buildTelemetryLine(st) {
     .filter(Boolean)
     .sort()
     .slice(-1)[0];
-  const tsFull = latestLastWrite
-    ? String(latestLastWrite).slice(11, 19)
-    : String(st.checkedAt || '').slice(11, 19);
+  const latestEventAt = pendingEvents.length > 0 ? pendingEvents[pendingEvents.length - 1]?.createdAt : null;
+  const tsSource = latestEventAt || latestLastWrite || st.checkedAt || '';
+  const tsFull = String(tsSource).slice(11, 19);
   const ts = tsFull ? tsFull.slice(0, 5) : '--:--';
 
+  const waveSuffix = st.waves?.hasWaves && st.waves.currentWave ? ` · 波次 \`${st.waves.currentWave}\`` : '';
+  const timerSuffix = st.activeStageTimer && st.activeStageTimer.elapsedSec !== null && st.activeStageTimer.elapsedSec !== undefined
+    ? ` · 已耗时 ${st.activeStageTimer.elapsedCn || formatDurationCn(st.activeStageTimer.elapsedSec)}`
+    : '';
   const headerLine = st.pipeline?.markdownBreadcrumb
-    ? `> ${title} · \`${ts}\` · \`${st.batchId}\` · 进度 ${st.pipeline.markdownBreadcrumb}`
-    : `> ${title} · \`${ts}\` · 批次 \`${st.batchId}\``;
+    ? `> ${title} · \`${ts}\` · \`${st.batchId}\` · 进度 ${st.pipeline.markdownBreadcrumb}${waveSuffix}${timerSuffix}`
+    : `> ${title} · \`${ts}\` · 批次 \`${st.batchId}\`${waveSuffix}${timerSuffix}`;
 
   let detailLine = '';
   if (hasBreaker) {
-    detailLine = '> 触发安全熔断保护，自动中继已暂停，等待你确认处理方式。';
+    const evExtra = hasPendingEvents ? `（另有 ${pendingEvents.length} 条待处理事件信号）` : '';
+    detailLine = `> 触发安全熔断保护，自动中继已暂停，等待你确认处理方式${evExtra}。`;
+  } else if (hasPendingEvents) {
+    const latestEv = pendingEvents[pendingEvents.length - 1];
+    const roleCn = formatRoleLabelCn(latestEv.role || 'ab');
+    const typeCn = formatEventTypeCn(latestEv.type);
+    const taskPart = latestEv.task ? `（任务 \`${latestEv.task}\`）` : '';
+    const msgPart = latestEv.message ? `：${latestEv.message}` : '';
+    const morePart = pendingEvents.length > 1 ? `（共 ${pendingEvents.length} 条待确认）` : '';
+    detailLine = `> 收到 \`${roleCn}\` 发出的「${typeCn}」信号${taskPart}${msgPart}${morePart}，请总控及时核查并确认。`;
   } else if (hasAudit) {
-    detailLine = `> 独立审计专员正在隔离核验 \`${st.activeCrossAgent.taskId}\`（代码仓保持只读未改动），完成后自动回传总控，无需你操作。`;
+    const auditTimer = st.activeStageTimer?.elapsedCn ? `，当前已耗时 ${st.activeStageTimer.elapsedCn}` : '';
+    detailLine = `> 独立审计专员正在隔离核验 \`${st.activeCrossAgent.taskId}\`（代码仓保持只读未改动${auditTimer}），完成后自动回传总控，无需你操作。`;
   } else if (hasHandoff) {
     detailLine = `> 检测到 \`${st.pendingCrossAgent.length}\` 项跨端待转交任务，正在自动安排独立审计专员接手。`;
   } else if (hasWorktrees) {
@@ -1079,8 +1561,32 @@ function buildTelemetryLine(st) {
   return `${headerLine}\n${detailLine}`;
 }
 
+function resolveActiveStageTimer(pipeline, state) {
+  const nowMs = Date.now();
+  if (state.activeCrossAgent?.taskId) {
+    const stg = normalizeStageKey(state.activeCrossAgent.taskId);
+    const rec = state.stageTimers?.[stg];
+    const startMs = rec?.reviewStartedAtMs || rec?.startedAtMs || Date.parse(state.activeCrossAgent.startedAt);
+    if (startMs && !Number.isNaN(startMs)) {
+      const sec = Math.max(0, Math.round((nowMs - startMs) / 1000));
+      return { stage: stg, phase: 'review', elapsedSec: sec, elapsedCn: formatDurationCn(sec), status: 'reviewing' };
+    }
+  }
+  const activeStage = pipeline?.stages?.find((s) => s.status === 'active' || s.status === 'blocked');
+  const candidateKey = activeStage?.stage || Object.keys(state.stageTimers || {}).slice(-1)[0];
+  if (candidateKey && state.stageTimers?.[candidateKey]) {
+    const rec = state.stageTimers[candidateKey];
+    let sec = rec.elapsedSec ?? 0;
+    if (rec.startedAtMs && !rec.finishedAtMs) {
+      sec = Math.max(0, Math.round((nowMs - rec.startedAtMs) / 1000));
+    }
+    return { stage: candidateKey, phase: rec.status || 'active', elapsedSec: sec, elapsedCn: formatDurationCn(sec), status: rec.status || 'active' };
+  }
+  return null;
+}
+
 function collectStatus(ctx) {
-  const { config, winProjectRoot, devDir, statePath, logPath } = ctx;
+  const { config, winProjectRoot, devDir, statePath, logPath, eventsPath } = ctx;
   const state = loadOrCreateState(statePath);
   const idleThreshold = config.thresholds?.idleThresholdSec ?? 180;
   const maxNoProgress = config.thresholds?.maxNoProgressPushes ?? 3;
@@ -1093,13 +1599,9 @@ function collectStatus(ctx) {
   const boardMtimeSec = safeStatMtimeSec(boardPath);
   const abCardMtimeSec = safeStatMtimeSec(abCardPath);
 
-  let boardLastLogs = [];
-  let boardTaskRows = [];
-  if (fs.existsSync(boardPath)) {
-    const boardLines = fs.readFileSync(boardPath, 'utf8').split(/\r?\n/);
-    boardLastLogs = boardLines.filter((l) => /^\|\s*`20/.test(l)).slice(-5);
-    boardTaskRows = boardLines.filter((l) => /^\|\s*(?:`?[A-Z0-9][A-Za-z0-9._-]+`?)\s*\|/.test(l) && !/^\|\s*`20/.test(l));
-  }
+  const boardDoc = parseBoardDocument(boardPath);
+  const boardLastLogs = boardDoc.logRows.slice(-5).map((r) => r.raw);
+  const boardTaskRows = boardDoc.taskRows.map((r) => r.raw);
 
   let abHeadings = [];
   if (fs.existsSync(abCardPath)) {
@@ -1170,7 +1672,15 @@ function collectStatus(ctx) {
     recentLog = fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean).slice(-8);
   }
 
-  const pipeline = parsePipelineSummary(boardTaskRows, state, state.activeCrossAgent);
+  const allEvents = readEvents(eventsPath);
+  const pendingEvents = allEvents.filter((e) => !e.acked);
+  const recentEvents = allEvents.slice(-10);
+
+  const pipeline = parsePipelineSummary(boardDoc.taskRows, state, state.activeCrossAgent, boardDoc.waveColIdx);
+  const waves = parseWaveSummary(boardDoc.taskRows, config, state, state.activeCrossAgent, boardDoc.waveColIdx);
+  const contextBudgets = inspectContextBudgets(ctx);
+  const activeStageTimer = resolveActiveStageTimer(pipeline, state);
+
   const statusObj = {
     checkedAt: formatIsoOffset(),
     projectName: config.projectName,
@@ -1186,6 +1696,12 @@ function collectStatus(ctx) {
     changedSinceLastSnapshot,
     roles,
     pipeline,
+    waves,
+    pendingEvents,
+    recentEvents,
+    stageTimers: state.stageTimers || {},
+    activeStageTimer,
+    contextBudgets,
     boardTaskRows,
     boardLastLogs,
     abHeadings,
@@ -1226,6 +1742,25 @@ function cmdStatus(flags) {
     console.log('--- worktrees ---');
     for (const wt of st.worktrees) {
       console.log(`WORKTREE ${wt.id} (${wt.source}): exists=${wt.exists} branch=${wt.branch ?? '-'} HEAD=${wt.headShort ?? '-'} DIRTY=${wt.dirtyCount ?? '-'} path=${wt.path}`);
+    }
+  }
+  if (st.waves?.hasWaves) {
+    console.log('--- waves ---');
+    console.log(`WAVES: current=${st.waves.currentWave ?? '-'} parallelReady=${JSON.stringify(st.waves.parallelReady)} summary=${st.waves.summary}`);
+  }
+  if (st.activeStageTimer) {
+    console.log(`STAGE_TIMER: stage=${st.activeStageTimer.stage} phase=${st.activeStageTimer.phase} elapsed=${st.activeStageTimer.elapsedCn}`);
+  }
+  if (st.pendingEvents.length > 0) {
+    console.log('--- pending events ---');
+    for (const ev of st.pendingEvents) {
+      console.log(`${ev.id} [${ev.createdAt}] role=${ev.role} type=${ev.type} task=${ev.task || '-'} msg=${ev.message || ''}`);
+    }
+  }
+  if (st.contextBudgets?.overBudgetCount > 0) {
+    console.log('--- context budget warnings ---');
+    for (const f of st.contextBudgets.overBudgetFiles) {
+      console.log(`OVER_BUDGET ${f.file}: ${f.lines}/${f.maxLines} lines (+${f.excessLines})`);
     }
   }
   console.log(`BOARD_MTIME=${st.boardMtime ?? '-'}  AB_CARD_MTIME=${st.abCardMtime ?? '-'}`);
@@ -1638,17 +2173,23 @@ function cmdState(flags, action) {
     if (!flags.task || !flags.subagent || !flags.output) {
       throw new Error('start-review requires --task, --subagent, and --output');
     }
+    const startedAt = formatIsoOffset();
     state.activeCrossAgent = {
       taskId: flags.task,
       role: flags.role || 'R0',
       subagentId: flags.subagent,
       outputPath: flags.output,
       handoffKey: flags.handoff || null,
-      startedAt: formatIsoOffset(),
+      startedAt,
     };
+    touchStageTimer(state, flags.task, 'start-review');
     saveState(ctx.statePath, state);
     appendRelayLog(ctx.logPath, `CROSS-AGENT DISPATCHED task=${flags.task} role=${flags.role || 'R0'} subagent=${flags.subagent} expected=${flags.output}`);
-    console.log(JSON.stringify({ ok: true, activeCrossAgent: state.activeCrossAgent }, null, 2));
+    console.log(JSON.stringify({
+      ok: true,
+      activeCrossAgent: state.activeCrossAgent,
+      stageTimer: state.stageTimers[normalizeStageKey(flags.task)] || null,
+    }, null, 2));
     return;
   }
 
@@ -1658,6 +2199,13 @@ function cmdState(flags, action) {
     }
     const stageKey = normalizeStageKey(flags.task);
     const maxFixRounds = ctx.config.thresholds?.maxFixRounds ?? 2;
+    const fallbackReviewStartMs = state.activeCrossAgent?.startedAt
+      ? Date.parse(state.activeCrossAgent.startedAt)
+      : null;
+    const timer = touchStageTimer(state, flags.task, 'finish-review', {
+      verdict: flags.verdict,
+      fallbackReviewStartMs: fallbackReviewStartMs && !Number.isNaN(fallbackReviewStartMs) ? fallbackReviewStartMs : null,
+    });
     if (flags.verdict === '要求整改') {
       state.stageFixes[stageKey] = (state.stageFixes[stageKey] || 0) + 1;
     } else if (flags.verdict === '通过') {
@@ -1675,7 +2223,9 @@ function cmdState(flags, action) {
     saveState(ctx.statePath, state);
     const fixCount = state.stageFixes[stageKey] || 0;
     const fixCapTriggered = fixCount >= maxFixRounds && flags.verdict === '要求整改';
-    appendRelayLog(ctx.logPath, `CROSS-AGENT DONE task=${flags.task} stage=${stageKey} verdict=${flags.verdict} fix_count=${fixCount}/${maxFixRounds} sha256=${flags.sha256 || '-'} report=${flags.report || '-'}`);
+    const reviewDurationSec = timer?.lastReviewDurationSec ?? null;
+    const stageElapsedSec = timer?.elapsedSec ?? null;
+    appendRelayLog(ctx.logPath, `CROSS-AGENT DONE task=${flags.task} stage=${stageKey} verdict=${flags.verdict} fix_count=${fixCount}/${maxFixRounds} review_sec=${reviewDurationSec ?? '-'} sha256=${flags.sha256 || '-'} report=${flags.report || '-'}`);
     console.log(JSON.stringify({
       ok: true,
       stageKey,
@@ -1683,6 +2233,8 @@ function cmdState(flags, action) {
       fixCount,
       maxFixRounds,
       fixCapBreaker: fixCapTriggered,
+      reviewDurationSec,
+      stageElapsedSec,
     }, null, 2));
     return;
   }
@@ -1790,6 +2342,936 @@ async function cmdNotify(flags) {
   console.log(JSON.stringify({ sent: true, status: res.status, responseSnippet: text.slice(0, 200) }));
 }
 
+function cmdEvent(flags, action) {
+  const ctx = loadConfigAndPaths(flags);
+  const sub = String(action || 'list').trim().toLowerCase();
+
+  if (sub === 'emit') {
+    if (!flags.role) throw new Error('event emit requires --role <role>');
+    const role = normalizeRoleName(flags.role, 'event emit --role');
+    const type = String(flags.type || '').trim().toLowerCase();
+    if (!VALID_EVENT_TYPES.has(type)) {
+      throw new Error(`Invalid --type "${flags.type || ''}". Expected: ${Array.from(VALID_EVENT_TYPES).join(', ')}`);
+    }
+    const sha = flags.sha ? String(flags.sha).trim() : null;
+    const task = flags.task ? String(flags.task).trim() : null;
+    const message = flags.message ? String(flags.message).trim() : '';
+    const ev = {
+      id: `ev-${Date.now()}-${randomBytes(2).toString('hex')}`,
+      createdAt: formatIsoOffset(),
+      role,
+      type,
+      task,
+      sha,
+      message,
+      acked: false,
+      ackedAt: null,
+    };
+    fs.mkdirSync(path.dirname(ctx.eventsPath), { recursive: true });
+    fs.appendFileSync(ctx.eventsPath, JSON.stringify(ev) + '\n', 'utf8');
+
+    if (task) {
+      const state = loadOrCreateState(ctx.statePath);
+      touchStageTimer(state, task, 'event', { eventType: type });
+      saveState(ctx.statePath, state);
+    }
+
+    const allEvents = readEvents(ctx.eventsPath);
+    const pendingCount = allEvents.filter((e) => !e.acked).length;
+    appendRelayLog(ctx.logPath, `EVENT_EMIT id=${ev.id} role=${role.toUpperCase()} type=${type} task=${task || '-'}`);
+    console.log(JSON.stringify({ ok: true, event: ev, pendingCount }, null, 2));
+    return;
+  }
+
+  if (sub === 'list') {
+    const allEvents = readEvents(ctx.eventsPath);
+    const showAll = Boolean(flags.all);
+    const limit = flags.limit ? Math.max(1, parseInt(String(flags.limit), 10) || 20) : null;
+    let items = showAll ? allEvents : allEvents.filter((e) => !e.acked);
+    if (limit) items = items.slice(-limit);
+    const pendingCount = allEvents.filter((e) => !e.acked).length;
+
+    if (flags.json) {
+      console.log(JSON.stringify({
+        ok: true,
+        totalCount: allEvents.length,
+        pendingCount,
+        shownCount: items.length,
+        events: items,
+      }, null, 2));
+      return;
+    }
+    console.log(`=== Relay Events (${showAll ? 'all' : 'pending'}: ${items.length}/${allEvents.length}, pending=${pendingCount}) ===`);
+    for (const ev of items) {
+      console.log(`${ev.id} [${ev.acked ? 'ACKED' : 'PENDING'}] ${ev.createdAt} role=${ev.role} type=${ev.type} task=${ev.task || '-'} msg=${ev.message || ''}`);
+    }
+    return;
+  }
+
+  if (sub === 'ack') {
+    const all = Boolean(flags.all);
+    const targetId = flags.id ? String(flags.id).trim() : null;
+    const targetTask = flags.task ? String(flags.task).trim() : null;
+    const targetRole = flags.role ? normalizeRoleName(flags.role, 'event ack --role') : null;
+    if (!all && !targetId && !targetTask && !targetRole) {
+      throw new Error('event ack requires one of: --all, --id <eventId>, --task <id>, or --role <role>');
+    }
+    const events = readEvents(ctx.eventsPath);
+    const nowIso = formatIsoOffset();
+    let ackedCount = 0;
+    for (const ev of events) {
+      if (ev.acked) continue;
+      const matches = all ||
+        (targetId && ev.id === targetId) ||
+        (targetTask && (ev.task === targetTask || normalizeStageKey(ev.task) === normalizeStageKey(targetTask))) ||
+        (targetRole && ev.role === targetRole);
+      if (matches) {
+        ev.acked = true;
+        ev.ackedAt = nowIso;
+        ackedCount++;
+      }
+    }
+    writeEventsAtomic(ctx.eventsPath, events);
+    const remainingPending = events.filter((e) => !e.acked).length;
+    appendRelayLog(ctx.logPath, `EVENT_ACK acked=${ackedCount} remaining=${remainingPending}`);
+    console.log(JSON.stringify({ ok: true, ackedCount, remainingPending }, null, 2));
+    return;
+  }
+
+  if (sub === 'clear') {
+    const clearAll = Boolean(flags.all);
+    const events = readEvents(ctx.eventsPath);
+    const kept = clearAll ? [] : events.filter((e) => !e.acked);
+    const removedCount = events.length - kept.length;
+    writeEventsAtomic(ctx.eventsPath, kept);
+    appendRelayLog(ctx.logPath, `EVENT_CLEAR mode=${clearAll ? 'all' : 'acked'} removed=${removedCount} remaining=${kept.length}`);
+    console.log(JSON.stringify({ ok: true, removedCount, remainingCount: kept.length }, null, 2));
+    return;
+  }
+
+  throw new Error(`Unknown event action "${sub}". Expected: emit, list, ack, or clear.`);
+}
+
+function resolveDocLinkTarget(ctx, sourceFile, rawTarget) {
+  let clean = String(rawTarget || '').trim();
+  if (!clean || /^(?:https?:|mailto:|file:|#|<)/i.test(clean)) return { skipped: true };
+  clean = clean.split('#')[0].split('?')[0].trim();
+  if (!clean) return { skipped: true };
+  const fromSource = path.resolve(path.dirname(sourceFile), clean);
+  if (fs.existsSync(fromSource)) return { skipped: false, exists: true, resolved: fromSource };
+  const fromDev = path.resolve(ctx.devDir, clean);
+  if (fs.existsSync(fromDev)) return { skipped: false, exists: true, resolved: fromDev };
+  const fromRoot = path.resolve(ctx.winProjectRoot, clean);
+  if (fs.existsSync(fromRoot)) return { skipped: false, exists: true, resolved: fromRoot };
+  return { skipped: false, exists: false, rawTarget: clean, resolved: fromSource };
+}
+
+function collectMarkdownLinks(text) {
+  const results = [];
+  const re = /\[([^\]]+)\]\(([^)]+)\)/g;
+  const lines = String(text || '').split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    let m;
+    while ((m = re.exec(lines[i])) !== null) {
+      results.push({ lineNum: i + 1, label: m[1], target: m[2].trim() });
+    }
+  }
+  return results;
+}
+
+function pickLatestSpecFile(specsDir) {
+  if (!fs.existsSync(specsDir)) return null;
+  const files = fs.readdirSync(specsDir)
+    .filter((f) => f.endsWith('.md'))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  if (files.length === 0) return null;
+  const specNamed = files.filter((f) => /SPEC/i.test(f));
+  const chosen = specNamed.length > 0 ? specNamed[specNamed.length - 1] : files[files.length - 1];
+  return path.join(specsDir, chosen);
+}
+
+function runAnalyze(ctx) {
+  const errors = [];
+  const warnings = [];
+  const addError = (code, file, line, message) => errors.push({ code, file, line: line || null, message });
+  const addWarning = (code, file, line, message) => warnings.push({ code, file, line: line || null, message });
+
+  const specsDir = path.join(ctx.devDir, 'specs');
+  const latestSpecPath = pickLatestSpecFile(specsDir);
+  let specSummary = {
+    found: false,
+    file: null,
+    approved: false,
+    draft: false,
+    verificationIds: [],
+    undecidedPds: [],
+  };
+
+  const boardPath = path.join(ctx.devDir, 'DISPATCH_BOARD.md');
+  const boardDoc = parseBoardDocument(boardPath);
+  const statePath = path.join(ctx.devDir, 'STATE.md');
+
+  const boardHasActiveTasks = boardDoc.taskRows.some((r) => {
+    const rawId = (r.cells[0] || '').replace(/`/g, '').trim();
+    const txt = r.cells.slice(1).join(' | ');
+    return rawId !== 'T-00' && /(?:实施中|已接棒|返修中|进行中|审核中|复审中)/.test(txt);
+  });
+
+  if (!latestSpecPath) {
+    addWarning('SPEC_MISSING', 'specs/', null, '未检测到 Spec 方案文件，请先完成立项规范文档后再开工。');
+  } else {
+    const specRel = path.relative(ctx.devDir, latestSpecPath).replace(/\\/g, '/');
+    const specText = fs.readFileSync(latestSpecPath, 'utf8');
+    const specLines = specText.split(/\r?\n/);
+    const vIds = Array.from(new Set(specText.match(/\bV-\d+\b/g) || []));
+    const isApproved = /\[已批准方案/.test(specText);
+    const isDraft = /\[讨论草案|\[设计预审/.test(specText) && !isApproved;
+
+    const undecidedPds = [];
+    for (let i = 0; i < specLines.length; i++) {
+      const ln = specLines[i];
+      const pdMatches = ln.match(/\bPD-(?:CR-)?\d+\b/g);
+      if (!pdMatches) continue;
+      if (/(?:待确认|待拍板|待用户拍板|TBD|待定)/.test(ln)) {
+        for (const pd of pdMatches) {
+          undecidedPds.push({ id: pd, line: i + 1 });
+        }
+      }
+    }
+
+    specSummary = {
+      found: true,
+      file: specRel,
+      approved: isApproved,
+      draft: isDraft,
+      verificationIds: vIds,
+      undecidedPds,
+    };
+
+    if (vIds.length === 0) {
+      addError('SPEC_NO_VERIFICATION_MATRIX', specRel, null, `最新方案 ${specRel} 缺少可量化的 V-xx 验收矩阵条目。`);
+    }
+    if (undecidedPds.length > 0) {
+      const pdList = undecidedPds.map((p) => p.id).join(', ');
+      if (isDraft && !boardHasActiveTasks) {
+        addWarning('SPEC_DRAFT_UNDECIDED_PD', specRel, undecidedPds[0].line, `方案草案仍含未拍板项：${pdList}（批准开工前须全部拍板）。`);
+      } else {
+        addError('SPEC_UNDECIDED_PD', specRel, undecidedPds[0].line, `方案存在未拍板决策项：${pdList}，禁止带着未决 PD 开工。`);
+      }
+    }
+    if (isDraft && boardHasActiveTasks) {
+      addError('SPEC_DRAFT_WHILE_ACTIVE', specRel, null, `看板已存在实施中任务，但最新方案 ${specRel} 仍标记为草案/待拍板标签。`);
+    }
+  }
+
+  let boardSummary = {
+    exists: boardDoc.exists,
+    taskCount: boardDoc.taskRows.length,
+    duplicateTaskIds: [],
+    missingTagRows: [],
+    brokenLinks: [],
+  };
+
+  if (!boardDoc.exists) {
+    addError('BOARD_MISSING', 'DISPATCH_BOARD.md', null, '缺少核心调度看板 DISPATCH_BOARD.md。');
+  } else {
+    const seenIds = new Map();
+    for (const row of boardDoc.taskRows) {
+      const rawId = (row.cells[0] || '').replace(/`/g, '').trim();
+      if (!rawId || /^<.*>$/.test(rawId) || /^---+$/.test(rawId)) continue;
+      const normId = rawId.toUpperCase();
+      if (seenIds.has(normId)) {
+        boardSummary.duplicateTaskIds.push(rawId);
+        addError('BOARD_DUPLICATE_TASK_ID', 'DISPATCH_BOARD.md', row.lineNum, `看板存在重复任务编号 "${rawId}"（首次出现于第 ${seenIds.get(normId)} 行）。`);
+      } else {
+        seenIds.set(normId, row.lineNum);
+      }
+
+      if (/^T-\d+(?:\.\d+)?(?:[-_](?:R0|FIX\d+|C))?$/i.test(rawId)) {
+        const titleCell = row.cells[boardDoc.titleColIdx] || row.cells[1] || '';
+        const escaped = rawId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const tagRe = new RegExp(`\\[\\s*\`?${escaped}\`?\\s*\\]`, 'i');
+        if (!tagRe.test(titleCell)) {
+          boardSummary.missingTagRows.push({ taskId: rawId, line: row.lineNum });
+          addError('BOARD_MISSING_TASK_TAG', 'DISPATCH_BOARD.md', row.lineNum, `任务 "${rawId}" 标题列末尾缺少标准化标记 "[${rawId}]"。`);
+        }
+      }
+
+      const evidenceCell = row.cells[row.cells.length - 1] || '';
+      for (const m of evidenceCell.matchAll(/`([^`\r\n]+)`/g)) {
+        const token = m[1].trim();
+        if (!token || token === '—' || token === '-' || /^<.*>$/.test(token)) continue;
+        if (token.includes('/') || /\.(?:md|json|txt|html)$/i.test(token)) {
+          const chk = resolveDocLinkTarget(ctx, boardPath, token);
+          if (!chk.skipped && !chk.exists) {
+            boardSummary.brokenLinks.push({ file: 'DISPATCH_BOARD.md', line: row.lineNum, target: token });
+            addError('BOARD_BROKEN_LINK', 'DISPATCH_BOARD.md', row.lineNum, `看板证据/报告引用断链：\`${token}\` 不存在。`);
+          }
+        }
+      }
+    }
+
+    for (const row of boardDoc.logRows) {
+      for (const m of row.raw.matchAll(/归档文件：\s*`([^`\r\n]+)`/g)) {
+        const target = m[1].trim();
+        const chk = resolveDocLinkTarget(ctx, boardPath, target);
+        if (!chk.skipped && !chk.exists) {
+          boardSummary.brokenLinks.push({ file: 'DISPATCH_BOARD.md', line: row.lineNum, target });
+          addError('BOARD_BROKEN_LINK', 'DISPATCH_BOARD.md', row.lineNum, `看板归档索引断链：\`${target}\` 不存在。`);
+        }
+      }
+    }
+
+    const mdLinkFiles = [{ rel: 'DISPATCH_BOARD.md', full: boardPath }];
+    if (fs.existsSync(statePath)) mdLinkFiles.push({ rel: 'STATE.md', full: statePath });
+    for (const f of mdLinkFiles) {
+      const content = fs.readFileSync(f.full, 'utf8');
+      for (const lk of collectMarkdownLinks(content)) {
+        const chk = resolveDocLinkTarget(ctx, f.full, lk.target);
+        if (!chk.skipped && !chk.exists) {
+          boardSummary.brokenLinks.push({ file: f.rel, line: lk.lineNum, target: lk.target });
+          addError('BOARD_BROKEN_LINK', f.rel, lk.lineNum, `${f.rel} 第 ${lk.lineNum} 行链接目标不存在：${lk.target}`);
+        }
+      }
+    }
+  }
+
+  const contextBudgets = inspectContextBudgets(ctx);
+  for (const f of contextBudgets.overBudgetFiles) {
+    addWarning('CONTEXT_BUDGET_EXCEEDED', f.file, null, `${f.file} 当前 ${f.lines} 行，超出上下文预算 ${f.maxLines} 行（+${f.excessLines} 行），建议执行 compact 或精简历史区。`);
+  }
+
+  const state = loadOrCreateState(ctx.statePath);
+  const idleThreshold = ctx.config.thresholds?.idleThresholdSec ?? 180;
+  const maxNoProgress = ctx.config.thresholds?.maxNoProgressPushes ?? 3;
+  const maxFixRounds = ctx.config.thresholds?.maxFixRounds ?? 2;
+  const roles = resolveRoleThreads(ctx.config, state, idleThreshold, maxNoProgress);
+  const noProgressRoles = Object.entries(roles).filter(([, r]) => r.noProgressBreaker).map(([n]) => n);
+  const fixCapStages = Object.entries(state.stageFixes || {}).filter(([, c]) => c >= maxFixRounds).map(([s]) => s);
+  if (noProgressRoles.length > 0 || fixCapStages.length > 0) {
+    addError(
+      'CIRCUIT_BREAKER_ACTIVE',
+      '.agents/relay/relay-state.json',
+      null,
+      `存在未解除的熔断保护（无进展角色：${noProgressRoles.join(',') || '无'}；返修上限阶段：${fixCapStages.join(',') || '无'}）。`,
+    );
+  }
+
+  const pendingEvents = readEvents(ctx.eventsPath).filter((e) => !e.acked);
+  if (pendingEvents.length > 0) {
+    addWarning('PENDING_EVENTS', '.agents/relay/events.jsonl', null, `存在 ${pendingEvents.length} 条未确认事件信号，请及时查看并 ack。`);
+  }
+
+  return {
+    ok: errors.length === 0,
+    checkedAt: formatIsoOffset(),
+    projectName: ctx.config.projectName,
+    batchId: ctx.config.batchId,
+    errorCount: errors.length,
+    warningCount: warnings.length,
+    errors,
+    warnings,
+    spec: specSummary,
+    board: boardSummary,
+    contextBudgets,
+    pendingEventCount: pendingEvents.length,
+    breakers: { noProgressRoles, fixCapStages },
+  };
+}
+
+function cmdAnalyze(flags) {
+  const ctx = loadConfigAndPaths(flags);
+  const res = runAnalyze(ctx);
+  if (!res.ok) process.exitCode = 1;
+  if (flags.json) {
+    console.log(JSON.stringify(res, null, 2));
+    return;
+  }
+  console.log(`=== 防漂移体检 (${res.projectName} / ${res.batchId}) -> ${res.ok ? '通过' : '发现阻断错误'} ===`);
+  console.log(`错误: ${res.errorCount} 条 ｜ 提示: ${res.warningCount} 条 ｜ 未确认事件: ${res.pendingEventCount} 条`);
+  for (const e of res.errors) {
+    console.log(`[错误/${e.code}] ${e.file}${e.line ? `:${e.line}` : ''} - ${e.message}`);
+  }
+  for (const w of res.warnings) {
+    console.log(`[提醒/${w.code}] ${w.file}${w.line ? `:${w.line}` : ''} - ${w.message}`);
+  }
+}
+
+function formatCompactStamp(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+function cmdCompact(flags) {
+  const ctx = loadConfigAndPaths(flags);
+  const apply = Boolean(flags.apply);
+  const keepLogs = Math.max(1, parseInt(String(flags['keep-logs'] || '15'), 10) || 15);
+  const boardPath = path.join(ctx.devDir, 'DISPATCH_BOARD.md');
+  const budgetsCheck = inspectContextBudgets(ctx);
+  const boardDoc = parseBoardDocument(boardPath);
+
+  const isArchiveIndexRow = (r) => {
+    const idCell = (r.cells[1] || '').replace(/`/g, '').trim();
+    return idCell === 'ARCHIVE' || /历史调度日志已归档/.test(r.raw);
+  };
+  const existingArchiveRows = boardDoc.logRows.filter(isArchiveIndexRow);
+  const regularLogRows = boardDoc.logRows.filter((r) => !isArchiveIndexRow(r));
+  const archivableCount = Math.max(0, regularLogRows.length - keepLogs);
+  const linesBefore = boardDoc.exists ? boardDoc.lines.length : 0;
+
+  let linesAfter = linesBefore;
+  let archivedCount = 0;
+  let archiveFile = null;
+  let archiveRelPath = null;
+
+  if (apply && boardDoc.exists && archivableCount > 0 && boardDoc.logStartIdx >= 0 && boardDoc.logEndIdx >= boardDoc.logStartIdx) {
+    const toArchive = regularLogRows.slice(0, archivableCount);
+    const toKeep = regularLogRows.slice(archivableCount);
+
+    const archiveDir = path.join(ctx.devDir, 'archive');
+    fs.mkdirSync(archiveDir, { recursive: true });
+    const baseStamp = formatCompactStamp();
+    let fileName = `DISPATCH_BOARD_LOG_${baseStamp}.md`;
+    let seq = 1;
+    while (fs.existsSync(path.join(archiveDir, fileName))) {
+      fileName = `DISPATCH_BOARD_LOG_${baseStamp}_${seq++}.md`;
+    }
+    archiveFile = path.join(archiveDir, fileName);
+    archiveRelPath = `archive/${fileName}`;
+
+    const nowIso = formatIsoOffset();
+    const archiveDoc = [
+      `# ${ctx.config.projectName} 调度日志历史归档`,
+      '',
+      `- **批次**：\`${ctx.config.batchId}\``,
+      `- **归档时间**：\`${nowIso}\``,
+      `- **归档条数**：${toArchive.length} 条`,
+      `- **来源**：\`DISPATCH_BOARD.md\``,
+      '',
+      boardDoc.logHeaderLine,
+      boardDoc.logSepLine,
+      ...toArchive.map((r) => r.raw),
+      '',
+    ].join('\n');
+    fs.writeFileSync(archiveFile, archiveDoc, 'utf8');
+
+    const indexRow = `| \`${nowIso}\` | \`ARCHIVE\` | 历史调度日志已归档（${toArchive.length} 条） | \`relay compact\` | \`—\` | 归档文件：\`${archiveRelPath}\` |`;
+    const newLogBlock = [
+      ...existingArchiveRows.map((r) => r.raw),
+      indexRow,
+      ...toKeep.map((r) => r.raw),
+    ];
+    const updatedLines = [
+      ...boardDoc.lines.slice(0, boardDoc.logStartIdx),
+      ...newLogBlock,
+      ...boardDoc.lines.slice(boardDoc.logEndIdx + 1),
+    ];
+    fs.writeFileSync(boardPath, updatedLines.join('\n').replace(/\r\n/g, '\n'), 'utf8');
+    linesAfter = updatedLines.length;
+    archivedCount = toArchive.length;
+    appendRelayLog(ctx.logPath, `COMPACT_BOARD archived=${archivedCount} kept=${toKeep.length} archive=${archiveRelPath}`);
+  }
+
+  const afterBudgets = apply ? inspectContextBudgets(ctx) : budgetsCheck;
+  const suggestions = [];
+  for (const f of afterBudgets.overBudgetFiles) {
+    if (f.kind === 'board' && archivableCount > 0 && !apply) {
+      suggestions.push(`DISPATCH_BOARD.md 超出预算（${f.lines}/${f.maxLines} 行），可执行 compact --apply 归档 ${archivableCount} 条历史日志。`);
+    } else {
+      suggestions.push(`${f.file} 当前 ${f.lines}/${f.maxLines} 行（+${f.excessLines} 行），请由 Codex-Hub 整理折叠已闭环旧节，勿直接删改审计或 Spec 原件。`);
+    }
+  }
+
+  const result = {
+    ok: true,
+    mode: apply ? 'apply' : 'dry-run',
+    keepLogs,
+    budgets: afterBudgets.budgets,
+    files: afterBudgets.files,
+    overBudgetCount: afterBudgets.overBudgetCount,
+    board: {
+      exists: boardDoc.exists,
+      totalLogRows: regularLogRows.length,
+      existingArchiveRows: existingArchiveRows.length,
+      archivableLogRows: archivableCount,
+      keptLogRows: apply && archivedCount > 0 ? Math.min(regularLogRows.length, keepLogs) : regularLogRows.length,
+      archivedCount,
+      archiveFile,
+      archiveRelPath,
+      linesBefore,
+      linesAfter,
+    },
+    suggestions,
+  };
+
+  if (flags.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  console.log(`=== 上下文预算与日志瘦身 (${result.mode}) ===`);
+  for (const f of result.files) {
+    console.log(`${f.exceeded ? '[超预算]' : '[正常]'} ${f.file}: ${f.lines}/${f.maxLines} 行`);
+  }
+  console.log(`看板常规日志: ${result.board.totalLogRows} 条 | 保留上限: ${keepLogs} 条 | ${apply ? `已归档: ${archivedCount} 条` : `可归档: ${archivableCount} 条`}`);
+  if (archiveRelPath) console.log(`归档文件: ${archiveRelPath} (看板行数 ${linesBefore} -> ${linesAfter})`);
+  for (const s of suggestions) console.log(`建议: ${s}`);
+}
+
+function escapeHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function safeJsonForScript(obj) {
+  return JSON.stringify(obj)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+function collectUiPayload(ctx, live = false) {
+  const status = collectStatus(ctx);
+  const analysis = runAnalyze(ctx);
+  return {
+    generatedAt: formatIsoOffset(),
+    live,
+    status,
+    analysis,
+  };
+}
+
+function renderCockpitHtml(payload, live = false) {
+  const st = payload.status;
+  const titleText = `${st.projectName || 'SDD'} · 中文协同驾驶舱`;
+  const embeddedJson = safeJsonForScript(payload);
+
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(titleText)}</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --panel-alt: #162032;
+      --border: #334155;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --ok: #22c55e;
+      --active: #38bdf8;
+      --warn: #f59e0b;
+      --err: #ef4444;
+      --accent: #818cf8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 20px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.5;
+    }
+    .wrap { max-width: 1240px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+    .topbar {
+      background: linear-gradient(135deg, #1e293b 0%, #172554 100%);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 20px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+    .title { font-size: 20px; font-weight: 700; margin: 0; }
+    .meta { color: var(--muted); font-size: 13px; margin-top: 4px; }
+    .pill-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .pill {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      border: 1px solid var(--border);
+      background: var(--panel-alt);
+    }
+    .pill.ok { border-color: rgba(34, 197, 94, 0.5); color: #86efac; }
+    .pill.active { border-color: rgba(56, 189, 248, 0.5); color: #7dd3fc; }
+    .pill.warn { border-color: rgba(245, 158, 11, 0.5); color: #fcd34d; }
+    .pill.err { border-color: rgba(239, 68, 68, 0.5); color: #fca5a5; }
+    .btn {
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .btn:hover { background: #1d4ed8; }
+    .telemetry-box {
+      background: var(--panel);
+      border-left: 4px solid var(--active);
+      border-radius: 8px;
+      padding: 14px 16px;
+      font-size: 14px;
+      white-space: pre-wrap;
+    }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .card h2 { font-size: 15px; margin: 0; color: #f8fafc; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+    .stage-flow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .stage-chip {
+      padding: 5px 10px;
+      border-radius: 8px;
+      font-size: 13px;
+      background: var(--panel-alt);
+      border: 1px solid var(--border);
+    }
+    .stage-done { border-color: var(--ok); color: #86efac; }
+    .stage-active { border-color: var(--active); color: #7dd3fc; font-weight: 600; }
+    .stage-blocked { border-color: var(--err); color: #fca5a5; font-weight: 600; }
+    .list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+    .item {
+      background: var(--panel-alt);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+    }
+    .muted { color: var(--muted); font-size: 12px; }
+    .bar-bg { height: 7px; background: #0b1220; border-radius: 999px; overflow: hidden; margin-top: 6px; }
+    .bar-fill { height: 100%; background: var(--ok); }
+    .bar-fill.warn { background: var(--warn); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    pre.logbox {
+      margin: 0;
+      padding: 10px 12px;
+      background: #0b1220;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 12px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      max-height: 240px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="topbar">
+      <div>
+        <h1 class="title" id="hdr-title">${escapeHtml(titleText)}</h1>
+        <div class="meta" id="hdr-meta"></div>
+      </div>
+      <div class="pill-row">
+        <span class="pill active" id="hdr-mode"></span>
+        <span class="pill" id="hdr-sync">${live ? '实时轮询中（每 5 秒）' : '静态离线快照'}</span>
+        ${live ? '<button class="btn" id="btn-refresh" type="button">立即刷新</button>' : ''}
+      </div>
+    </header>
+
+    <section class="telemetry-box" id="telemetry-box"></section>
+
+    <div class="grid">
+      <section class="card">
+        <h2>流水线进度与阶段耗时</h2>
+        <div class="stage-flow" id="pipeline-flow"></div>
+        <ul class="list" id="timer-list"></ul>
+      </section>
+
+      <section class="card">
+        <h2>波次并行推进（Waves）</h2>
+        <div class="muted" id="wave-summary"></div>
+        <ul class="list" id="wave-list"></ul>
+      </section>
+
+      <section class="card">
+        <h2>协同角色与工作树（Worktrees）</h2>
+        <ul class="list" id="role-list"></ul>
+        <ul class="list" id="worktree-list"></ul>
+      </section>
+
+      <section class="card">
+        <h2>待处理事件信号（Event Bus）</h2>
+        <ul class="list" id="event-list"></ul>
+      </section>
+
+      <section class="card">
+        <h2>防漂移体检与上下文预算</h2>
+        <div id="analyze-summary"></div>
+        <ul class="list" id="budget-list"></ul>
+      </section>
+
+      <section class="card">
+        <h2>最近调度记录与中继日志</h2>
+        <pre class="logbox mono" id="log-box"></pre>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    window.__INITIAL_DATA__ = ${embeddedJson};
+    const IS_LIVE = ${live ? 'true' : 'false'};
+
+    function esc(v) {
+      return String(v == null ? '' : v)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function fmtDur(sec) {
+      if (sec == null || Number.isNaN(Number(sec))) return '未知';
+      const s = Math.max(0, Math.round(Number(sec)));
+      if (s < 60) return s + ' 秒';
+      if (s < 3600) {
+        const m = Math.floor(s / 60), r = s % 60;
+        return r > 0 ? m + ' 分 ' + r + ' 秒' : m + ' 分';
+      }
+      return Math.floor(s / 3600) + ' 小时 ' + Math.floor((s % 3600) / 60) + ' 分';
+    }
+
+    function roleNameCn(r) {
+      const k = String(r || '').toLowerCase();
+      if (k === 'hub') return '总控中枢';
+      if (k === 'ab') return '实施专席 (AB)';
+      if (k === 'c') return '真机验证 (C)';
+      if (k === 'r0') return '独立审计 (R0)';
+      return k.toUpperCase() + ' 线';
+    }
+
+    function eventTypeCn(t) {
+      const m = { done: '任务完工', blocked: '遇到阻塞', review_ready: '送审就绪', heartbeat: '进度心跳', decision_needed: '等待拍板' };
+      return m[String(t || '').toLowerCase()] || String(t || '事件信号');
+    }
+
+    function renderAll(data) {
+      const st = data.status || {};
+      const an = data.analysis || {};
+      const modeCn = /semi/i.test(st.automationMode || '') ? '半自动值守' : '全自动托管';
+
+      document.getElementById('hdr-title').textContent = (st.projectName || '项目') + ' · 中文协同驾驶舱';
+      document.getElementById('hdr-meta').textContent =
+        '批次 ' + (st.batchId || '-') + ' ｜ 分级 ' + (st.tier || '-') +
+        ' ｜ 分支 ' + (st.git && st.git.branch ? st.git.branch : '-') +
+        ' ｜ 版本快照 ' + (st.git && st.git.headShort ? st.git.headShort : '-') +
+        ' ｜ 更新于 ' + (st.checkedAt || data.generatedAt || '-');
+      document.getElementById('hdr-mode').textContent = modeCn + ' · ' + (st.runtime || '-');
+
+      const cleanTelemetry = String(st.telemetryLine || '暂无态势')
+        .replace(/^>\\s?/gm, '')
+        .replace(/\\*\\*/g, '')
+        .replace(/\`/g, '');
+      document.getElementById('telemetry-box').textContent = cleanTelemetry;
+
+      const stages = (st.pipeline && st.pipeline.stages) || [];
+      document.getElementById('pipeline-flow').innerHTML = stages.length
+        ? stages.map((s) => {
+            const cls = s.status === 'done' ? 'stage-done' : (s.status === 'active' ? 'stage-active' : (s.status === 'blocked' ? 'stage-blocked' : ''));
+            const icon = s.status === 'done' ? '✓' : (s.status === 'active' ? '▸' : (s.status === 'blocked' ? '!' : '◌'));
+            return '<span class="stage-chip ' + cls + '">' + esc(s.stage) + ' ' + icon + '</span>';
+          }).join('')
+        : '<span class="muted">暂无流水线阶段记录</span>';
+
+      const timerEntries = Object.values(st.stageTimers || {});
+      document.getElementById('timer-list').innerHTML = timerEntries.length
+        ? timerEntries.map((t) =>
+            '<li class="item"><strong>' + esc(t.stage) + '</strong> · 状态：' + esc(t.status || '-') +
+            ' ｜ 累计耗时：' + esc(fmtDur(t.elapsedSec)) +
+            (t.lastReviewDurationSec != null ? ' ｜ 最近审计：' + esc(fmtDur(t.lastReviewDurationSec)) : '') +
+            '</li>'
+          ).join('')
+        : '<li class="item muted">尚无阶段计时记录（将在送审或事件上报时自动累计）</li>';
+
+      const waves = st.waves || {};
+      const waveItems = waves.items || [];
+      document.getElementById('wave-summary').textContent = waves.hasWaves
+        ? ('当前波次：' + (waves.currentWave || '-') + (waves.canParallelize ? ' ｜ 可并行开工：' + (waves.parallelReady || []).join(', ') : ''))
+        : '暂未在看板中划分 W0/W1 波次';
+      document.getElementById('wave-list').innerHTML = waveItems.length
+        ? waveItems.map((w) =>
+            '<li class="item"><div><strong>' + esc(w.wave) + '</strong> · 完成 ' + w.done + '/' + w.total +
+            (w.dependsOn && w.dependsOn.length ? ' ｜ 依赖：' + esc(w.dependsOn.join(', ')) : '') +
+            '</div><div class="muted">' + w.tasks.map((t) => esc(t.task) + '(' + esc(t.status) + ')').join(' · ') + '</div></li>'
+          ).join('')
+        : '<li class="item muted">暂无波次数据</li>';
+
+      const roleEntries = Object.entries(st.roles || {});
+      document.getElementById('role-list').innerHTML = roleEntries.map(([r, info]) => {
+        const stateCn = info.status === 'WORKING' ? '活跃执行中' : (info.status === 'STOPPED' ? '已静默待命' : '未绑定会话');
+        const idleCn = info.idleSeconds != null ? ('（静默 ' + fmtDur(info.idleSeconds) + '）') : '';
+        return '<li class="item"><strong>' + esc(roleNameCn(r)) + '</strong> · ' + esc(stateCn) + esc(idleCn) +
+          (info.threadName ? '<div class="muted">会话标题：' + esc(info.threadName) + '</div>' : '') + '</li>';
+      }).join('');
+
+      const wts = st.worktrees || [];
+      document.getElementById('worktree-list').innerHTML = wts.length
+        ? wts.map((w) =>
+            '<li class="item"><strong>工作树 ' + esc(w.role ? roleNameCn(w.role) : w.id) + '</strong> · ' +
+            (w.exists ? ('分支 ' + esc(w.branch || '-') + ' · 版本 ' + esc(w.headShort || '-') + ' · 改动 ' + (w.dirtyCount ?? 0) + ' 个文件') : '目录未创建') +
+            '</li>'
+          ).join('')
+        : '<li class="item muted">当前为单仓库工作区（未发现附加 worktree）</li>';
+
+      const evs = (st.pendingEvents && st.pendingEvents.length ? st.pendingEvents : st.recentEvents) || [];
+      document.getElementById('event-list').innerHTML = evs.length
+        ? evs.slice().reverse().map((ev) =>
+            '<li class="item"><span class="pill ' + (ev.acked ? 'ok' : 'warn') + '">' + (ev.acked ? '已确认' : '待处理') + '</span> ' +
+            '<strong>' + esc(roleNameCn(ev.role)) + '</strong> · ' + esc(eventTypeCn(ev.type)) +
+            (ev.task ? ' · 任务 ' + esc(ev.task) : '') +
+            '<div class="muted">' + esc(ev.message || '无附加说明') + ' ｜ ' + esc(ev.createdAt || '') + '</div></li>'
+          ).join('')
+        : '<li class="item muted">暂无事件信号记录</li>';
+
+      const errHtml = (an.errors || []).map((e) => '<div class="item"><span class="pill err">错误</span> ' + esc(e.message) + '</div>').join('');
+      const warnHtml = (an.warnings || []).map((w) => '<div class="item"><span class="pill warn">提醒</span> ' + esc(w.message) + '</div>').join('');
+      document.getElementById('analyze-summary').innerHTML =
+        '<div style="margin-bottom:8px;"><span class="pill ' + (an.ok ? 'ok' : 'err') + '">' +
+        (an.ok ? '体检通过（零阻断错误）' : '发现 ' + (an.errorCount || 0) + ' 项阻断错误') +
+        '</span> <span class="pill">提示 ' + (an.warningCount || 0) + ' 项</span></div>' +
+        errHtml + warnHtml;
+
+      const budgetFiles = (st.contextBudgets && st.contextBudgets.files) || [];
+      document.getElementById('budget-list').innerHTML = budgetFiles.map((f) => {
+        const pct = Math.min(100, Math.round((f.lines / Math.max(1, f.maxLines)) * 100));
+        return '<li class="item"><div>' + esc(f.file) + '：' + f.lines + ' / ' + f.maxLines + ' 行' +
+          (f.exceeded ? ' <span class="pill warn">超预算</span>' : '') +
+          '</div><div class="bar-bg"><div class="bar-fill ' + (f.exceeded ? 'warn' : '') + '" style="width:' + pct + '%"></div></div></li>';
+      }).join('');
+
+      const logLines = []
+        .concat(['--- 看板最新调度记录 ---'], st.boardLastLogs || ['暂无'])
+        .concat(['', '--- 中继运行日志 ---'], st.recentLog || ['暂无']);
+      document.getElementById('log-box').textContent = logLines.join('\\n');
+    }
+
+    async function fetchStatus() {
+      const badge = document.getElementById('hdr-sync');
+      try {
+        const res = await fetch('/api/status', { cache: 'no-store' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        renderAll(data);
+        if (badge) badge.textContent = '实时同步于 ' + new Date().toLocaleTimeString();
+      } catch (err) {
+        if (badge) badge.textContent = '轮询连接断开（将自动重试）';
+      }
+    }
+
+    renderAll(window.__INITIAL_DATA__);
+    if (IS_LIVE) {
+      const btn = document.getElementById('btn-refresh');
+      if (btn) btn.addEventListener('click', fetchStatus);
+      setInterval(fetchStatus, 5000);
+    }
+  </script>
+</body>
+</html>
+`;
+}
+
+async function cmdUi(flags) {
+  const ctx = loadConfigAndPaths(flags);
+
+  if (flags.export) {
+    const outPath = path.resolve(String(flags.export));
+    const payload = collectUiPayload(ctx, false);
+    const html = renderCockpitHtml(payload, false);
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, html, 'utf8');
+    console.log(JSON.stringify({
+      ok: true,
+      mode: 'export',
+      outputPath: outPath,
+      bytes: Buffer.byteLength(html, 'utf8'),
+      projectName: ctx.config.projectName,
+      batchId: ctx.config.batchId,
+    }, null, 2));
+    return;
+  }
+
+  const host = String(flags.host || '127.0.0.1').trim();
+  const port = parseInt(String(flags.port || '4317'), 10);
+  const listenPort = Number.isInteger(port) && port >= 0 ? port : 4317;
+
+  const server = http.createServer((req, res) => {
+    const reqPath = (req.url || '/').split('?')[0];
+    if (reqPath === '/api/status') {
+      try {
+        const payload = collectUiPayload(ctx, true);
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+        });
+        res.end(JSON.stringify(payload));
+      } catch (err) {
+        res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: err?.message || String(err) }));
+      }
+      return;
+    }
+
+    if (reqPath === '/' || reqPath === '/index.html') {
+      try {
+        const payload = collectUiPayload(ctx, true);
+        const html = renderCockpitHtml(payload, true);
+        res.writeHead(200, {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'no-store',
+        });
+        res.end(html);
+      } catch (err) {
+        res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end(err?.message || String(err));
+      }
+      return;
+    }
+
+    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('Not Found');
+  });
+
+  await new Promise((resolve, reject) => {
+    const onSig = () => {
+      server.close(() => resolve());
+    };
+    process.once('SIGINT', onSig);
+    process.once('SIGTERM', onSig);
+    server.on('error', reject);
+    server.listen(listenPort, host, () => {
+      const addr = server.address();
+      const actualPort = typeof addr === 'object' && addr ? addr.port : listenPort;
+      console.log(JSON.stringify({
+        ok: true,
+        mode: 'serve',
+        host,
+        port: actualPort,
+        url: `http://${host}:${actualPort}/`,
+        projectName: ctx.config.projectName,
+        batchId: ctx.config.batchId,
+      }, null, 2));
+    });
+  });
+}
+
 async function main() {
   const { positionals, flags } = parseArgs(process.argv.slice(2));
   const cmd = positionals[0];
@@ -1824,6 +3306,18 @@ async function main() {
       break;
     case 'notify':
       await cmdNotify(flags);
+      break;
+    case 'analyze':
+      cmdAnalyze(flags);
+      break;
+    case 'event':
+      cmdEvent(flags, positionals[1]);
+      break;
+    case 'compact':
+      cmdCompact(flags);
+      break;
+    case 'ui':
+      await cmdUi(flags);
       break;
     default:
       throw new Error(`Unknown command: ${cmd}. Use --help for usage.`);

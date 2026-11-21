@@ -296,3 +296,220 @@ test('v1.2.0 human-readable Chinese cockpit output, render subcommands, custom r
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('v1.3.0 Golden Triangle: waves, analyze, event bus, stageTimers, compact archive, and offline HTML UI work', () => {
+  const tmp = makeTempDir('sdd-v13-test-');
+  try {
+    const cliHelp = runNode([CLI_PATH, '--help']);
+    assert.equal(cliHelp.status, 0, cliHelp.stderr);
+    for (const cmdName of ['analyze', 'event', 'compact', 'ui']) {
+      assert.ok(cliHelp.stdout.includes(cmdName), `cli --help should list ${cmdName}`);
+    }
+    const relayHelp = runNode([RELAY_PATH, '--help']);
+    assert.equal(relayHelp.status, 0, relayHelp.stderr);
+    for (const cmdName of ['analyze', 'event', 'compact', 'ui']) {
+      assert.ok(relayHelp.stdout.includes(cmdName), `relay --help should list ${cmdName}`);
+    }
+
+    const initRes = runNode([CLI_PATH, 'init', '--project', tmp, '--runtime', 'windows', '--name', 'TriApp', '--batch', 'PKG-TRI-01']);
+    assert.equal(initRes.status, 0, initRes.stderr);
+
+    const cfg = JSON.parse(fs.readFileSync(path.join(tmp, '.agents', 'relay.json'), 'utf8'));
+    assert.equal(cfg.version, '1.0');
+    assert.deepEqual(cfg.waves, []);
+    assert.deepEqual(cfg.contextBudgets, { stateMaxLines: 120, boardMaxLines: 160, taskCardMaxLines: 250 });
+
+    const agentsMd = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf8');
+    assert.match(agentsMd, /Red → Green TDD/);
+    assert.match(agentsMd, /两段式独立审计/);
+    assert.match(agentsMd, /event emit/);
+
+    const abCard = fs.readFileSync(path.join(tmp, '.agents', 'development', 'tasks', 'AB-codex.md'), 'utf8');
+    assert.match(abCard, /所属波次/);
+    assert.match(abCard, /Red → Green TDD/);
+
+    // Write valid approved Spec with V-01/V-02 and decided PD-01
+    const specPath = path.join(tmp, '.agents', 'development', 'specs', 'CORE_SPEC_V0.1.md');
+    fs.writeFileSync(specPath, [
+      '# CORE 实施方案（V0.1）',
+      '',
+      '- **文档版本与效力**：`V0.1` · `[已批准方案·本次执行依据]`',
+      '',
+      '## 5. 分层验收矩阵',
+      '| 编号 | 验收项 | 验证层级 | 量化通过标准 |',
+      '| --- | :--- | :--- | :--- |',
+      '| `V-01` | 底座波次就绪 | `离线单测` | `退出码 0` |',
+      '| `V-02` | 并行模块交付 | `离线单测` | `退出码 0` |',
+      '',
+      '## 8. 待拍板决策清单',
+      '| 决策 ID | 问题描述 | 备选方案 | 推荐建议 | 用户最终拍板 |',
+      '| --- | :--- | :--- | :--- | :--- |',
+      '| `PD-01` | 并行波次策略 | `A: 按波次 / B: 单线` | `推荐 A` | `已拍板：按 A 执行` |',
+      '',
+    ].join('\n'), 'utf8');
+
+    // Write clean multi-wave board (W0 done, W1 done, W2 parallel ready T-02 & T-03)
+    const boardPath = path.join(tmp, '.agents', 'development', 'DISPATCH_BOARD.md');
+    const cleanBoardContent = [
+      '# TriApp 任务调度看板（DISPATCH_BOARD）',
+      '',
+      '- **活跃批次**：`PKG-TRI-01`（分级：`L3`）',
+      '',
+      '## 1. 阶段任务总表（每个任务标题末尾均须带 `[T-xx]` 编号）',
+      '',
+      '| 任务编号 | 波次/依赖 | 任务名称、目标与门禁（末尾带编号） | 执行／审计角色 | 固定对象（40 位 SHA / 基线） | 状态 | 返修轮次 | 报告／证据索引 |',
+      '| --- | :---: | --- | --- | --- | --- | --- | --- |',
+      '| `T-00` | `W0` | 方案定稿与实施前独立预审 `[T-00]` | `Hub` / `R0` | `基线` | 通过 | `0` | — |',
+      '| `T-01` | `W1` | 底座初始化 `[T-01]` | `AB` | `1111111111111111111111111111111111111111` | 通过 | `0` | — |',
+      '| `T-02` | `W2（依赖 T-01）` | 模块 A 实施 `[T-02]` | `AB` | `待实施` | 待派发 | `0` | — |',
+      '| `T-03` | `W2（依赖 T-01）` | 模块 B 实施 `[T-03]` | `AB` | `待实施` | 待派发 | `0` | — |',
+      '',
+      '## 2. 时序署名调度日志',
+      '',
+      '| 时间 | 任务编号 | 动作摘要 | 来源 → 去向 | 关联 SHA / 版本 | 备注与核收凭据 |',
+      '| --- | --- | --- | --- | --- | --- |',
+      '| `2026-11-21T10:00:00+08:00` | `PKG-TRI-01` | 初始化协作看板 | 初始化脚手架 | `—` | 使用 `sdd-multi-agent-relay` v1.3 创建 |',
+      '',
+    ].join('\n');
+    fs.writeFileSync(boardPath, cleanBoardContent, 'utf8');
+
+    // Wave parsing verification via status --json
+    const waveStatus = JSON.parse(runNode([CLI_PATH, 'status', '--project', tmp, '--json']).stdout);
+    assert.equal(waveStatus.waves.hasWaves, true);
+    assert.equal(waveStatus.waves.currentWave, 'W2');
+    assert.deepEqual(waveStatus.waves.parallelReady, ['T-02', 'T-03']);
+    assert.equal(waveStatus.waves.canParallelize, true);
+
+    // Pre-flight analyze --json passes cleanly
+    const analyzeOk = runNode([CLI_PATH, 'analyze', '--project', tmp, '--json']);
+    assert.equal(analyzeOk.status, 0, analyzeOk.stderr || analyzeOk.stdout);
+    const analyzeOkJson = JSON.parse(analyzeOk.stdout);
+    assert.equal(analyzeOkJson.ok, true);
+    assert.equal(analyzeOkJson.errorCount, 0);
+
+    // Inject duplicate task ID, missing [T-xx] tag, and broken link -> analyze must exit 1
+    const brokenBoardContent = cleanBoardContent.replace(
+      '| `T-03` | `W2（依赖 T-01）` | 模块 B 实施 `[T-03]` | `AB` | `待实施` | 待派发 | `0` | — |',
+      [
+        '| `T-02` | `W2（依赖 T-01）` | 重复编号任务 `[T-02]` | `AB` | `待实施` | 待派发 | `0` | — |',
+        '| `T-03` | `W2（依赖 T-01）` | 缺失编号后缀的任务 | `AB` | `待实施` | 待派发 | `0` | [broken](./missing-report.md) |',
+      ].join('\n'),
+    );
+    fs.writeFileSync(boardPath, brokenBoardContent, 'utf8');
+    const analyzeBad = runNode([CLI_PATH, 'analyze', '--project', tmp, '--json']);
+    assert.equal(analyzeBad.status, 1, 'analyze must exit non-zero on duplicate task ID / missing tag / broken link');
+    const analyzeBadJson = JSON.parse(analyzeBad.stdout);
+    assert.equal(analyzeBadJson.ok, false);
+    const errCodes = new Set(analyzeBadJson.errors.map((e) => e.code));
+    assert.ok(errCodes.has('BOARD_DUPLICATE_TASK_ID'));
+    assert.ok(errCodes.has('BOARD_MISSING_TASK_TAG'));
+    assert.ok(errCodes.has('BOARD_BROKEN_LINK'));
+
+    // Restore clean board
+    fs.writeFileSync(boardPath, cleanBoardContent, 'utf8');
+
+    // Event bus emit -> status --json detects pendingEvents & human telemetry -> start/finish-review timers -> ack -> clear
+    const emitRes = runNode([
+      CLI_PATH, 'event', 'emit', '--project', tmp,
+      '--role', 'ab', '--type', 'review_ready', '--task', 'T-02',
+      '--sha', '2222222222222222222222222222222222222222',
+      '--message', 'T-02 已冻结 SHA 并完成 Red→Green 实测',
+    ]);
+    assert.equal(emitRes.status, 0, emitRes.stderr);
+    const emitJson = JSON.parse(emitRes.stdout);
+    assert.equal(emitJson.ok, true);
+    assert.equal(emitJson.pendingCount, 1);
+
+    const listRes = runNode([CLI_PATH, 'event', 'list', '--project', tmp, '--json']);
+    assert.equal(listRes.status, 0, listRes.stderr);
+    assert.equal(JSON.parse(listRes.stdout).pendingCount, 1);
+
+    const evStatus = JSON.parse(runNode([CLI_PATH, 'status', '--project', tmp, '--json']).stdout);
+    assert.equal(evStatus.pendingEvents.length, 1);
+    assert.match(evStatus.telemetryLine, /◆ \*\*收到事件信号\*\*/);
+    assert.match(evStatus.telemetryLine, /已耗时/);
+    assert.equal(/(?:\bHold\b|\bWait\b|\bHEAD\b|Δ|R0#)/.test(evStatus.telemetryLine), false);
+    assert.ok(evStatus.stageTimers['T-02'], 'Expected stageTimers entry for T-02');
+
+    const startRev = runNode([
+      CLI_PATH, 'state', 'start-review', '--project', tmp,
+      '--task', 'T-02-R0', '--role', 'R0',
+      '--subagent', '11111111-1111-1111-1111-111111111111',
+      '--output', 'audits/PKG-TRI-01/T-02-R0-review.md',
+    ]);
+    assert.equal(startRev.status, 0, startRev.stderr);
+    const finishRev = runNode([
+      CLI_PATH, 'state', 'finish-review', '--project', tmp,
+      '--task', 'T-02-R0', '--verdict', '通过',
+      '--report', 'audits/PKG-TRI-01/T-02-R0-review.md',
+      '--sha256', 'deadbeef',
+    ]);
+    assert.equal(finishRev.status, 0, finishRev.stderr);
+    const finishJson = JSON.parse(finishRev.stdout);
+    assert.equal(typeof finishJson.reviewDurationSec, 'number');
+    assert.equal(typeof finishJson.stageElapsedSec, 'number');
+
+    const ackRes = runNode([CLI_PATH, 'event', 'ack', '--project', tmp, '--all']);
+    assert.equal(ackRes.status, 0, ackRes.stderr);
+    assert.equal(JSON.parse(ackRes.stdout).remainingPending, 0);
+
+    const afterAckStatus = JSON.parse(runNode([CLI_PATH, 'status', '--project', tmp, '--json']).stdout);
+    assert.equal(afterAckStatus.pendingEvents.length, 0);
+
+    const clearRes = runNode([CLI_PATH, 'event', 'clear', '--project', tmp]);
+    assert.equal(clearRes.status, 0, clearRes.stderr);
+    assert.equal(JSON.parse(clearRes.stdout).remainingCount, 0);
+
+    // Append 25 scheduling log rows -> compact --dry-run -> compact --apply --keep-logs 5
+    const extraLogs = [];
+    for (let i = 1; i <= 25; i++) {
+      const hh = String(i % 24).padStart(2, '0');
+      extraLogs.push(`| \`2026-11-21T12:${hh}:00+08:00\` | \`T-01\` | 巡检调度记录 #${i} | \`AB\` → \`Codex-Hub\` | \`—\` | 正常推进 |`);
+    }
+    fs.writeFileSync(boardPath, cleanBoardContent + extraLogs.join('\n') + '\n', 'utf8');
+
+    const dryCompact = runNode([CLI_PATH, 'compact', '--project', tmp, '--dry-run', '--keep-logs', '5', '--json']);
+    assert.equal(dryCompact.status, 0, dryCompact.stderr);
+    const dryJson = JSON.parse(dryCompact.stdout);
+    assert.equal(dryJson.mode, 'dry-run');
+    assert.equal(dryJson.board.totalLogRows, 26);
+    assert.equal(dryJson.board.archivableLogRows, 21);
+    assert.equal(dryJson.board.archivedCount, 0);
+
+    const applyCompact = runNode([CLI_PATH, 'compact', '--project', tmp, '--apply', '--keep-logs', '5', '--json']);
+    assert.equal(applyCompact.status, 0, applyCompact.stderr);
+    const applyJson = JSON.parse(applyCompact.stdout);
+    assert.equal(applyJson.mode, 'apply');
+    assert.equal(applyJson.board.archivedCount, 21);
+    assert.equal(applyJson.board.keptLogRows, 5);
+    assert.ok(applyJson.board.archiveFile && fs.existsSync(applyJson.board.archiveFile), 'Archive file must exist');
+    assert.match(fs.readFileSync(applyJson.board.archiveFile, 'utf8'), /巡检调度记录 #1/);
+
+    const compactedBoard = fs.readFileSync(boardPath, 'utf8');
+    assert.match(compactedBoard, /历史调度日志已归档（21 条）/);
+    assert.match(compactedBoard, /巡检调度记录 #25/);
+    assert.equal(/巡检调度记录 #1 \|/.test(compactedBoard), false);
+    assert.match(compactedBoard, /\| `T-00` \| `W0` \|/);
+
+    // Ensure compacted board archive reference passes analyze cleanly
+    const postCompactAnalyze = runNode([CLI_PATH, 'analyze', '--project', tmp, '--json']);
+    assert.equal(postCompactAnalyze.status, 0, postCompactAnalyze.stdout);
+
+    // Export offline zero-external-link Chinese HTML cockpit
+    const htmlOut = path.join(tmp, 'cockpit.html');
+    const uiRes = runNode([CLI_PATH, 'ui', '--project', tmp, '--export', htmlOut]);
+    assert.equal(uiRes.status, 0, uiRes.stderr);
+    const uiJson = JSON.parse(uiRes.stdout);
+    assert.equal(uiJson.ok, true);
+    assert.ok(fs.existsSync(htmlOut));
+    const html = fs.readFileSync(htmlOut, 'utf8');
+    assert.match(html, /<!DOCTYPE html>/i);
+    assert.match(html, /TriApp/);
+    assert.match(html, /中文协同驾驶舱/);
+    assert.match(html, /波次并行推进/);
+    assert.match(html, /待处理事件信号/);
+    assert.equal(/https?:\/\//i.test(html), false, 'Exported HTML cockpit must contain zero external http/https URLs');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

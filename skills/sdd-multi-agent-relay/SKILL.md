@@ -18,7 +18,7 @@ description: >-
 - 角色提示词与接龙报文模板：[ROLE_PROMPTS.md](./references/ROLE_PROMPTS.md)
 - 配置 Schema 与 CLI 手册：[PROJECT_CONFIG_SCHEMA.md](./references/PROJECT_CONFIG_SCHEMA.md)
 - 统一中继与状态脚本：[relay.mjs](./scripts/relay.mjs)
-- 项目脚手架模板：[resources/](./resources/)（含 [SPEC.md.template](./resources/SPEC.md.template) 与 [AGENTS.md.template](./resources/AGENTS.md.template)）
+- 项目脚手架模板：[resources/](./resources/)（含 [SPEC.md.template](./resources/SPEC.md.template)、[CR_DELTA.md.template](./resources/CR_DELTA.md.template) 与 [AGENTS.md.template](./resources/AGENTS.md.template)）
 - 极简端到端范本：[examples/sample-pkg/](./examples/sample-pkg/)（`Spec` / `Board` / `Task` / `R0` 实样对照）
 
 ---
@@ -60,10 +60,11 @@ description: >-
      node "...\scripts\relay.mjs" spawn --role hub
      ```
 
-3. **进入 Phase 1–2（方案 + 预审 + 统一编号拆单与拍板）**：
-   - 严格按 [DOC_STANDARDS.md](./references/DOC_STANDARDS.md) 与 [SPEC.md.template](./resources/SPEC.md.template) 引导 `Hub`（建议 `Model: "pro"`）写出 8 板块规范方案 `specs/<THEME>_SPEC_V0.1.md`（带 `V-xx` 验收矩阵与 `PD-xx` 决策清单）；
+3. **进入 Phase 1–2（方案 + 预审 + 统一编号拆单 + 防漂移体检与拍板）**：
+   - 严格按 [DOC_STANDARDS.md](./references/DOC_STANDARDS.md) 与 [SPEC.md.template](./resources/SPEC.md.template) 引导 `Hub`（建议 `Model: "pro"`）写出 8 板块规范方案 `specs/<THEME>_SPEC_V0.1.md`（带 `V-xx` 验收矩阵与 `PD-xx` 决策清单）；中途增量变更使用 [CR_DELTA.md.template](./resources/CR_DELTA.md.template)；
    - 如为 L3 任务，拉起独立 `R0` 子会话（`Model: "pro"`，跨模型家族审计）做实施前预审（固定单号 `T-00`），补齐反例后冻结版本；
-   - 请求用户一次性拍板 `PD-xx` 决策与**全程自动续推授权**（同时确认完工后是否自动关机与 Webhook 告警），交由 `Codex-Hub` 按**强制顺序编号规则（每个任务末尾带 `[T-xx]`，如 `T-01`、`T-02`…，派生 `T-01-R0` / `T-01-FIX1` / `T-02-C`）**拆单开跑。
+   - 请求用户一次性拍板 `PD-xx` 决策与**全程自动续推授权**（同时确认完工后是否自动关机与 Webhook 告警），交由 `Codex-Hub` 按**强制顺序编号规则（每个任务末尾带 `[T-xx]`，如 `T-01`、`T-02`…，派生 `T-01-R0` / `T-01-FIX1` / `T-02-C`）**与 **Wave 波次依赖（`W0`/`W1`…，支持无依赖任务分派至多 Worktree 并行实施）**拆单；
+   - 正式派发 `AB` 实施前执行一次 `relay.mjs analyze --json` 开工前防漂移体检（确认 `V-xx` 齐备、无未决 `PD-xx`、看板无重号/缺标签/断链），`AB` 实施与返修强制执行 **Red → Green TDD**，`R0` 执行 **两段式独立审计**（先逐条核对 Spec/`V-xx` 零遗漏，再审代码质量与对抗边界）。
 
 ---
 
@@ -81,8 +82,11 @@ description: >-
 
 每次唤醒严格按以下优先级顺序检查并处置：
 
-1. **采集双端元数据与状态**：
-   - 在目标项目目录下直接运行 `node "...\scripts\relay.mjs" status --json`（或显式传 `--project` / `--config`）；支持自动识别多 `git worktree`（`worktrees.autoDiscover` / `worktrees.roleWorktrees`）及自定义角色名（除 `hub`/`ab`/`c` 外亦支持 `a`/`b` 等角色键）。
+1. **采集双端元数据、事件总线与波次状态**：
+   - 在目标项目目录下直接运行 `node "...\scripts\relay.mjs" status --json`（或显式传 `--project` / `--config`）；自动解析波次进度 `waves`（`currentWave` / `parallelReady`）、未确认事件 `pendingEvents`、阶段耗时 `stageTimers` / `activeStageTimer`、文档行数预算 `contextBudgets`、多 `git worktree` 及自定义角色名；
+   - 若存在待处理结构化事件（`pendingEvents` 非空），`telemetryLine` 会最高优先显示 `◆ **收到事件信号**`：先逐条核实事件（如 `review_ready`/`done`/`blocked`/`decision_needed`）并按相应流程处置后，再执行 `relay.mjs event ack --id <id>`（或 `--all`）确认消警；
+   - 若 `contextBudgets.overBudgetCount > 0` 或 `DISPATCH_BOARD.md` 调度日志冗长，执行 `relay.mjs compact --apply` 自动将历史日志归档至 `.agents/development/archive/` 并保留 1 行索引（绝不修改 `specs/`、`audits/` 或源码）；
+   - 需要向用户提供可视化全景看板时，可运行 `relay.mjs ui --export <file.html>` 导出零外链离线中文驾驶舱网页，或运行 `relay.mjs ui --port 4317` 启动本地实时服务；
    - 若存在活跃子会话，调用 `manage_subagents{Action:"list"}` 检查子会话是否正常运行（防 `429`/崩溃静默空等）。
 
 2. **检查熔断与用户阻塞（最高优先暂停）**：

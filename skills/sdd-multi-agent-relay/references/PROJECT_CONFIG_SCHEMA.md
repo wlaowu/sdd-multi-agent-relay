@@ -20,6 +20,8 @@
 | `codexBin` | string | `windows` 模式下可显式指定 `codex.exe` 路径；留空时自动探测 PATH 与 VS Code 扩展内置 `codex.exe` |
 | `gitBranch` | string | 当前任务特性分支（建议 `feat/<batchId>`） |
 | `automationMode` | `"full-auto"\|"semi-auto"` | 值守自动化级别：`full-auto`（全自动中继、自动拉起 `R0` 并可按授权收官）；`semi-auto`（半自动巡检并等待人工确认关键节点） |
+| `waves` | array | 可选声明式波次定义（如 `[{ "id": "W1", "tasks": ["T-01"], "dependsOn": ["W0"] }]`）；当看板任务总表未填 `波次/依赖` 列时作为回退依据，默认 `[]` |
+| `contextBudgets` | object | 协作文档行数预算阈值：`{ "stateMaxLines": 120, "boardMaxLines": 160, "taskCardMaxLines": 250 }`，供 `status`、`analyze` 与 `compact` 监控抗上下文腐化 |
 | `worktrees` | object | 多 Worktree 监控配置：`{ "autoDiscover": true, "roleWorktrees": { "a": "../wt-a", "b": "../wt-b" } }`；`send`/`spawn` 会自动在对应角色 worktree 中执行，并纳入遥测 `DIRTY` 监控（同时兼容顶层 `roleWorktrees`） |
 | `threads` | object | 显式固定的各角色 UUID：`{ "hub": "...", "ab": "...", "c": "..." }`（亦支持自定义角色名如 `a`、`b`）；**可留空 `""` 交由 `threadMatchers` 动态解析** |
 | `threadMatchers` | object | 按 `~/.codex/session_index.jsonl` 会话标题动态匹配关键字（大小写不敏感子串），如 `{ "hub": "Demo-Codex-Hub", "ab": "Demo-AB", "c": "Demo-C" }`；当对应 `threads[role]` 为空时自动匹配最新活跃会话 |
@@ -49,13 +51,17 @@
     "c":   { "lastPushAt": null, "lastPushThreadWrite": null, "consecutivePushesWithoutProgress": 0, "totalPushes": 0 }
   },
   "stageFixes": {},
+  "passedStages": {},
+  "stageTimers": {},
   "processedHandoffs": [],
   "activeCrossAgent": null,
   "rotations": []
 }
 ```
 
-- **`stageFixes`**：记录每个阶段累计收到 `要求整改` 的次数（如 `{"STAGE-B": 1}`）。达到 `thresholds.maxFixRounds`（默认 2）时，`status` 命令将返回 `fixCapBreaker: true`。
+- **`stageFixes`**：记录每个阶段累计收到 `要求整改` 的次数（如 `{"T-01": 1}`）。达到 `thresholds.maxFixRounds`（默认 2）时，`status` 命令将返回 `fixCapBreaker: true`。
+- **`stageTimers`**：自动追踪每个阶段从 `start-review` / `event emit` 到 `finish-review` 的累计耗时、最近一次审核耗时（秒）与阶段状态。
+- **`.agents/relay/events.jsonl`**：零依赖事件信号总线追加日志，记录由 `relay.mjs event emit` 写入的结构化信号（`id`、`createdAt`、`role`、`type`、`task`、`sha`、`message`、`acked`、`ackedAt`）。
 - **`processedHandoffs`**：记录已完成转交并回传中枢的跨端报文标识（如 `tasks/R0-review.md:183` 或任务 ID），避免重复派单。
 - **`activeCrossAgent`**：记录当前正在进行的 Antigravity 子会话 ID、目标输出路径与开始时间；若服务中断，恢复时先查磁盘文件与 `manage_subagents`。
 
@@ -98,7 +104,8 @@ node relay.mjs status [--config <relay.json> | --project <dir>] [--compact] [--j
 - **输出**：
   - `--compact`：输出 2 行**人话驾驶舱状态卡**（中文状态标题 + 阶段箭头进度 + 各角色/Worktree 中文说明与改动文件数 + 下一步提示）；
   - `hub` / `ab` / `c` 及自定义角色（如 `a` / `b`）的解析方式（`pinned` / `matcher` / `UNBOUND`）、会话标题、当前状态、`idle_seconds`、`last_write`；
-  - `DISPATCH_BOARD.md` 最新状态表行与最近 5 条日志、`AB-codex.md` 最近标题、解析后的流水线阶段状态 `pipeline`；
+  - `DISPATCH_BOARD.md` 最新状态表行与最近 5 条日志、`AB-codex.md` 最近标题、解析后的流水线阶段状态 `pipeline`、波次进度 `waves`（`currentWave` / `parallelReady` / `canParallelize`）；
+  - 事件总线状态 `pendingEvents` / `recentEvents`、阶段计时 `stageTimers` / `activeStageTimer`、文档预算 `contextBudgets`；
   - 过滤掉 `processedHandoffs` 后的新增「发送到：Antigravity / 待转交」跨端列表；
   - Git `branch`、`HEAD`（完整与短 SHA）、`dirtyCount` 及 `worktrees[]`（所有显式配置或 `git worktree list` 自动发现的次级 Worktree 状态）；
   - 熔断标记：`noProgressBreaker`（哪些角色达到 `maxNoProgressPushes`）、`fixCapBreaker`（哪些阶段达到 `maxFixRounds`）、`activeCrossAgent`、`automationMode`。
@@ -134,3 +141,30 @@ node relay.mjs state [--config <relay.json> | --project <dir>] reset-pushes --ro
 node relay.mjs notify [--config <relay.json> | --project <dir>] --event <circuit_breaker|blocker|quota|complete|info> --title <text> --message <text> [--dry-run]
 ```
 - **行为**：优先从 `process.env[webhook.envUrl]` 读取 Webhook URL，其次回退 `webhook.url`。支持 `feishu`、`wecom`、`dingtalk` 与 `generic` 四种格式。使用 `--dry-run` 可预览脱敏载荷而不发请求。
+
+### 10. `analyze` — 开工前防漂移体检（只读）
+```powershell
+node relay.mjs analyze [--config <relay.json> | --project <dir>] [--json]
+```
+- **行为**：只读检查最新 Spec 是否含 `V-xx` 与未拍板 `PD-xx`、看板是否存在重复任务号 / 缺失 `[T-xx]` / 相对链接断链、文档是否超出 `contextBudgets`、是否存在未确认事件或未解除熔断。发现阻断级 `errors` 时退出码为 `1`。
+
+### 11. `event` — 零依赖事件信号总线
+```powershell
+node relay.mjs event [--config <relay.json> | --project <dir>] emit --role <role> --type <done|blocked|review_ready|heartbeat|decision_needed> [--task <id>] [--sha <sha>] [--message <text>]
+node relay.mjs event [--config <relay.json> | --project <dir>] list [--all] [--limit <n>] [--json]
+node relay.mjs event [--config <relay.json> | --project <dir>] ack (--all | --id <eventId> | --task <id> | --role <role>)
+node relay.mjs event [--config <relay.json> | --project <dir>] clear [--all]
+```
+- **行为**：将结构化信号写入 `.agents/relay/events.jsonl` 并联动更新 `stageTimers`；`status` 优先读取未确认 `pendingEvents` 并在 `telemetryLine` 置顶显示 `◆ **收到事件信号**`。
+
+### 12. `compact` — 上下文预算监控与历史调度日志归档
+```powershell
+node relay.mjs compact [--config <relay.json> | --project <dir>] [--dry-run] [--apply] [--keep-logs <15>] [--json]
+```
+- **行为**：默认只读诊断 `STATE.md`、`DISPATCH_BOARD.md` 与 `tasks/*.md` 行数预算；传 `--apply` 时将 `DISPATCH_BOARD.md` 超出 `--keep-logs` 保留条数的早期调度日志安全归档至 `.agents/development/archive/DISPATCH_BOARD_LOG_<stamp>.md` 并在看板留 1 行索引（绝不修改 `specs/`、`audits/` 或源码）。
+
+### 13. `ui` — 零依赖离线中文 HTML 驾驶舱
+```powershell
+node relay.mjs ui [--config <relay.json> | --project <dir>] [--export <file.html>] [--host 127.0.0.1] [--port 4317]
+```
+- **行为**：生成完全自包含（零外链 CDN/字体）的中文响应式驾驶舱网页，涵盖流水线进度、波次并行、角色/Worktree、事件总线、防漂移体检与日志；传 `--export` 输出单文件静态 HTML，否则在本地启动 HTTP 服务每 5 秒轮询 `/api/status`。

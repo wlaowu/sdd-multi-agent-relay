@@ -1,5 +1,22 @@
 # 更新日志（CHANGELOG）
 
+## [1.3.0] - 2026-11-21
+
+### 黄金三角升级（防返修 · 抗腐化 · 事件驱动）
+- **Red → Green TDD 与两段式 `R0` 独立审计**：
+  - 升级 `AGENTS.md.template`、`TASK_CARD.md.template` 与 `ROLE_PROMPTS.md`，要求 `AB` 实施与返修先编写必失败边界/反例测试并附 Red→Green 实测证明；
+  - 要求 `R0` 执行两段式独立审计（第一段逐条核对 Spec 与 `V-xx` 验收零遗漏，第二段再开展代码质量与隔离对抗测试）。
+- **Wave 波次并行与上下文预算归档（`compact`）**：
+  - `DISPATCH_BOARD.md.template` 新增 `波次/依赖` 列（`W0`/`W1`），`relay.mjs status` 新增 `parseWaveSummary()` 解析 `currentWave` 与 `parallelReady`；
+  - `relay.json.template` 新增 `waves` 与 `contextBudgets`（默认 `120` / `160` / `250` 行），新增 `relay.mjs compact [--dry-run|--apply] [--keep-logs 15]` 自动将超长调度日志归档至 `.agents/development/archive/` 并留 1 行索引。
+- **零依赖事件信号总线（`event`）与阶段耗时追踪（`stageTimers`）**：
+  - 新增 `relay.mjs event <emit|list|ack|clear>`，结构化写入 `.agents/relay/events.jsonl`；`status` 与 `telemetryLine` 最高优先置顶展示 `◆ **收到事件信号**`；
+  - `relay-state.json` 在 `start-review` / `finish-review` / `event emit` 中累计 `stageTimers`，人话状态卡同步显示 `已耗时 X 分`。
+- **开工前防漂移体检（`analyze`）、增量变更模板（`CR_DELTA`）与离线 HTML 驾驶舱（`ui`）**：
+  - 新增 `relay.mjs analyze [--json]` 只读体检 Spec（`V-xx`/未决 `PD-xx`）、看板重复任务号/缺失 `[T-xx]`/断链、预算超标、未确认事件与熔断标记；
+  - 新增 `resources/CR_DELTA.md.template` 支持中途增量规范变更（`ADDED`/`MODIFIED`/`REMOVED` Diff）；
+  - 新增 `relay.mjs ui [--export <file.html>] [--port 4317]`，生成零外链全中文响应式驾驶舱网页（支持静态导出与 5 秒 `/api/status` 轮询）。
+
 ## [1.2.0] - 2026-11-21
 
 ### 人话驾驶舱输出全面优化（告别机械暗语）
